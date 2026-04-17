@@ -1,0 +1,102 @@
+/*  ============================================================
+  Project: machine
+  File:  main.cpp
+  Description: Controle une machine de test de cartilage xx puits
+
+  © 2026 Adrian Utge Le Gall
+  All rights reserved.
+
+  This software is provided for academic and research purposes only.
+  Any reproduction, modification, or distribution of this software,
+  in whole or in part, for commercial purposes is strictly prohibited
+  without prior written permission from the author.
+
+  Author: Adrian Utge Le Gall
+  Contact: adrianutge@gmail.com - utgelega@etu.univ-grenoble-alpes.fr
+  Created: 2026-04-13
+ ============================================================ */
+
+#include <Arduino.h>
+#include <functions.h>
+#include <boot_sequence.h>
+#include <Dynamixel2Arduino.h>
+// --- Configuration ----------------------------------------------------------
+
+constexpr uint8_t DXL_ID = 1;
+constexpr float DXL_PROTOCOL_VERSION = 2.0;
+constexpr uint32_t DXL_BAUDRATE = 57600;
+
+#define DXL_SERIAL Serial1
+#define DEBUG_SERIAL Serial
+
+constexpr int DXL_DIR_PIN = -1;
+
+// --- Objets ----------------------------------------------------------------
+
+Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
+
+// --- Setup -----------------------------------------------------------------
+
+void setup()
+{
+  DEBUG_SERIAL.begin(115200);
+  while (!DEBUG_SERIAL)
+  {
+    ;
+  }
+
+  DXL_SERIAL.begin(DXL_BAUDRATE);
+  dxl.begin(DXL_BAUDRATE);
+  dxl.setPortProtocolVersion(DXL_PROTOCOL_VERSION);
+
+  if (!dxl.ping(DXL_ID))
+  {
+    DEBUG_SERIAL.println("Moteur non detecte.");
+    while (true)
+    {
+      delay(1000);
+    }
+  }
+
+  dxl.torqueOff(DXL_ID);
+  dxl.setOperatingMode(DXL_ID, OP_VELOCITY);
+  dxl.torqueOn(DXL_ID);
+}
+
+// --- Loop ------------------------------------------------------------------
+
+void loop()
+{
+
+
+  Serial.println("hz_to_step(1) : " + String(hz_to_step(1)) );
+
+  dxl.setGoalVelocity(DXL_ID, hz_to_step(0)); 
+
+
+
+  /* for (size_t i = 0; i < 4096; i++)
+  {
+    dxl.setGoalPosition(DXL_ID, i);
+
+    // Print log
+    Serial.print("loop");
+    Serial.println(i);
+
+    Serial.print(">pos:");
+    Serial.println(dxl.getPresentPosition(DXL_ID));
+
+    Serial.print(">vel:");
+    Serial.println(dxl.getPresentVelocity(DXL_ID));
+
+    Serial.print(">cur:");
+    Serial.println(dxl.getPresentCurrent(DXL_ID));
+  
+    } */
+}
+
+
+
+
+
+

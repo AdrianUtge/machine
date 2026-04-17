@@ -1,0 +1,6 @@
+- [ ] auto home avec puissance motteurs -> check de puissance pendant le run 
+- [ ] contamination des puits ?
+- [ ] calibration de la force
+- [ ] mesure de la force
+            -> mesure de la couleur | Mechanochromic cholesteric liquid crystal elastomers |
+            -> |In Line Load Cell|
