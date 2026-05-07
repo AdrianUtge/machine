@@ -6,9 +6,9 @@ export interface MachineState {
   preset_name: string;
   frequency_hz: number | null;
   t_speed_percent: number;
-  position: string | null;
+  positions: number[];  // 4 table positions
+  sensors: number[];    // 4 force sensors
   motor_current: string | null;
-  force_sensor: string | null;
   errors: string;
   slave_status: string;
   machine_status: string;
@@ -89,9 +89,9 @@ export const useMachineController = () => {
           preset_name: 'UNKNOWN',
           frequency_hz: null,
           t_speed_percent: 100,
-          position: null,
+          positions: [0, 0, 0, 0],
+          sensors: [0, 0, 0, 0],
           motor_current: null,
-          force_sensor: null,
           errors: 'Status unavailable',
           slave_status: 'UNKNOWN',
           machine_status: 'CONNECTED',

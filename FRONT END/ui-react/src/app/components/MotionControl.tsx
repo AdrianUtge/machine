@@ -6,7 +6,6 @@ type CommandState = 'idle' | 'pending' | 'completed' | 'error';
 
 interface MotionControlProps {
   frequency: number;
-  speed: number;
   onChange: (value: number) => void;
   isConnected: boolean;
   selectedPreset: string;
@@ -18,7 +17,6 @@ interface MotionControlProps {
 
 export default function MotionControl({
   frequency,
-  speed,
   onChange,
   isConnected,
   selectedPreset,
@@ -28,7 +26,6 @@ export default function MotionControl({
   machineState
 }: MotionControlProps) {
   const [targetFrequency, setTargetFrequency] = useState(frequency);
-  const [targetSpeed, setTargetSpeed] = useState(speed);
   const [gotoPosition, setGotoPosition] = useState(0);
 
   const presets = [
@@ -49,13 +46,12 @@ export default function MotionControl({
     onPresetChange('custom');
   };
 
-  const handleSpeedChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFrequencyInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const newValue = parseFloat(e.target.value);
-    setTargetSpeed(newValue);
-  };
-
-  const handleApplySpeed = () => {
-    onCommand(`SET_SPEED:${targetSpeed}`);
+    setTargetFrequency(newValue);
+    // Send immediately (responsive)
+    onChange(newValue);
+    onPresetChange('custom');
   };
 
   const handlePresetSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -186,7 +182,7 @@ export default function MotionControl({
         </div>
 
         <div>
-          <label className="block text-sm text-slate-400 mb-2">Target Frequency</label>
+          <label className="block text-sm text-slate-400 mb-2">Target Frequency (Auto-Send)</label>
           <div className="flex gap-2">
             <input
               type="number"
@@ -194,49 +190,16 @@ export default function MotionControl({
               max="200"
               step="0.1"
               value={targetFrequency}
-              onChange={handleFrequencyChange}
+              onChange={handleFrequencyInputChange}
               disabled={!isConnected}
               className="flex-1 px-4 py-2 bg-slate-600 rounded-lg border border-slate-500 focus:border-purple-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed font-mono"
             />
             <span className="px-3 py-2 bg-slate-800 rounded-lg text-slate-400">Hz</span>
-            <button
-              onClick={handleApplyFrequency}
-              disabled={!isConnected || isCommandPending('SET_FREQ')}
-              className="px-6 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg transition-colors font-semibold"
-            >
-              Apply
-            </button>
           </div>
+          <div className="mt-2 text-xs text-slate-400">Changes sent automatically</div>
         </div>
       </div>
 
-      {/* Speed Control */}
-      <div className="bg-slate-700 rounded-lg p-4">
-        <label className="block text-sm font-semibold text-slate-300 mb-2">Speed Control</label>
-        <div className="flex gap-2">
-          <input
-            type="number"
-            min="0"
-            max="1000"
-            step="1"
-            value={targetSpeed}
-            onChange={handleSpeedChange}
-            disabled={!isConnected}
-            className="flex-1 px-4 py-2 bg-slate-600 rounded-lg border border-slate-500 focus:border-blue-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed font-mono"
-          />
-          <span className="px-3 py-2 bg-slate-800 rounded-lg text-slate-400">units</span>
-          <button
-            onClick={handleApplySpeed}
-            disabled={!isConnected || isCommandPending('SET_SPEED')}
-            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg transition-colors font-semibold"
-          >
-            Apply
-          </button>
-        </div>
-        <div className="mt-2 text-sm text-slate-400">
-          Current: {speed} units
-        </div>
-      </div>
     </div>
   );
 }

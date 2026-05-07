@@ -4,6 +4,7 @@ import ConnectionScreen from './components/ConnectionScreen';
 import MotionControl from './components/MotionControl';
 import StatusPanelSimple from './components/StatusPanelSimple';
 import SerialMonitor from './components/SerialMonitor';
+import PositionsAndSensors from './components/PositionsAndSensors';
 import { useMachineController } from './hooks/useMachineController';
 
 interface SerialLog {
@@ -205,12 +206,10 @@ export default function App() {
             {machineState ? (
               <MotionControl
                 frequency={machineState?.frequency_hz || 0}
-                speed={machineState?.t_speed_percent || 100}
                 onChange={handleFrequencyChange}
                 isConnected={isConnected}
                 selectedPreset={selectedPreset}
                 onPresetChange={handlePresetChange}
-                onSpeedChange={setSpeed}
                 machineState={machineState?.machine_status || 'DISCONNECTED'}
                 pendingCommands={{}}
               />
@@ -220,8 +219,17 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right Spacer */}
-        <div className="xl:col-span-1"></div>
+        {/* Positions & Sensors */}
+        <div className="xl:col-span-1">
+          {machineState ? (
+            <PositionsAndSensors
+              positions={machineState?.positions || [0, 0, 0, 0]}
+              sensors={machineState?.sensors || [0, 0, 0, 0]}
+            />
+          ) : (
+            <div className="text-slate-400">Loading sensors...</div>
+          )}
+        </div>
       </div>
 
       {/* Serial Monitor */}

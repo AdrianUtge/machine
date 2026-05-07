@@ -47,11 +47,27 @@ def parse_response(line: str, state: MachineState) -> None:
         except ValueError:
             pass
     elif key == "POSITION":
-        state.position = value
+        # Parse positions: "10,20,30,40" -> [10.0, 20.0, 30.0, 40.0]
+        try:
+            parts = value.split(",")
+            state.positions = [float(p.strip()) for p in parts[:4]]
+            # Pad with zeros if less than 4 values
+            while len(state.positions) < 4:
+                state.positions.append(0.0)
+        except ValueError:
+            pass
     elif key == "CURRENT":
         state.motor_current = value
-    elif key == "FORCE":
-        state.force_sensor = value
+    elif key == "FORCE" or key == "SENSOR":
+        # Parse sensors: "1.5,2.0,1.8,1.9" -> [1.5, 2.0, 1.8, 1.9]
+        try:
+            parts = value.split(",")
+            state.sensors = [float(p.strip()) for p in parts[:4]]
+            # Pad with zeros if less than 4 values
+            while len(state.sensors) < 4:
+                state.sensors.append(0.0)
+        except ValueError:
+            pass
     elif key == "ERROR":
         state.errors = value
     elif key == "SLAVE":
