@@ -31,15 +31,29 @@ export default function App() {
   } = useMachineController();
 
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
+  const [loadingPorts, setLoadingPorts] = useState(true);
+  const [portsError, setPortsError] = useState<string | null>(null);
   const [showConnection, setShowConnection] = useState(!isConnected);
   const [serialLogs, setSerialLogs] = useState<SerialLog[]>([]);
   const [selectedPreset, setSelectedPreset] = useState('custom');
 
-  // Load available ports on mount
+  // Load available ports on mount and when needed
   useEffect(() => {
     const loadPorts = async () => {
-      const ports = await getAvailablePorts();
-      setAvailablePorts(ports);
+      setLoadingPorts(true);
+      setPortsError(null);
+      try {
+        const ports = await getAvailablePorts();
+        setAvailablePorts(ports);
+        if (ports.length === 0) {
+          setPortsError('No ports detected. Make sure your device is connected.');
+        }
+      } catch (err) {
+        setPortsError('Failed to load ports. Make sure the API is running.');
+        console.error('Error loading ports:', err);
+      } finally {
+        setLoadingPorts(false);
+      }
     };
     loadPorts();
   }, [getAvailablePorts]);
@@ -86,8 +100,8 @@ export default function App() {
       <ConnectionScreen
         availablePorts={availablePorts}
         onConnect={handleConnect}
-        isLoading={isLoading}
-        error={error}
+        isLoading={loadingPorts}
+        error={portsError || error}
       />
     );
   }
