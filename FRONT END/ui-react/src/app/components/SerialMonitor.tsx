@@ -145,7 +145,7 @@ export default function SerialMonitor({
         </div>
       </div>
 
-      <div className="h-96 overflow-y-auto p-2 bg-slate-900 font-mono text-xs border-b border-slate-700">
+      <div className="h-64 overflow-y-auto p-2 bg-slate-900 font-mono text-xs border-b border-slate-700">
         {filteredLogs.length === 0 ? (
           <div className="text-slate-500 text-center py-8">No logs yet</div>
         ) : (
