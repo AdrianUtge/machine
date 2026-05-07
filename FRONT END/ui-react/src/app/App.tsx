@@ -210,6 +210,7 @@ export default function App() {
                 onPresetChange={handlePresetChange}
                 onSpeedChange={setSpeed}
                 machineState={machineState?.machine_status || 'DISCONNECTED'}
+                pendingCommands={{}}
               />
             ) : (
               <div className="text-slate-400">Loading motion control...</div>
