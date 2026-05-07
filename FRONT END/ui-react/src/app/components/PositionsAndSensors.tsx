@@ -48,31 +48,29 @@ export default function PositionsAndSensors({
   };
 
   return (
-    <div className="space-y-4">
-      {/* Table + Sensor Pairs */}
-      <div className="space-y-3">
+    <div className="space-y-4 h-full flex flex-col">
+      {/* Table + Sensor Pairs - 2x2 Grid */}
+      <div className="grid grid-cols-2 gap-3 flex-1">
         {[0, 1, 2, 3].map((idx) => (
-          <div key={idx} className="bg-slate-700 rounded-lg p-4 space-y-2">
+          <div key={idx} className="bg-slate-700 rounded-lg p-3 space-y-2 flex flex-col">
             {/* Table */}
             <button
               onClick={() => handleTableClick(idx)}
               disabled={!isConnected}
-              className={`w-full rounded p-3 transition-all text-left ${
+              className={`rounded p-2 transition-all text-left flex-1 ${
                 selectedTableIdx === idx
                   ? 'bg-blue-600 ring-2 ring-blue-400'
                   : 'bg-slate-800 hover:bg-slate-700'
               } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs text-slate-300 mb-1">
-                    <TrendingUp className="w-4 h-4 inline mr-1" />
-                    Table {idx + 1}
-                  </div>
-                  <div className="font-mono font-bold text-lg text-blue-400">
-                    {pos[idx].toFixed(1)}
-                    <span className="text-xs text-slate-400 ml-1">mm</span>
-                  </div>
+              <div>
+                <div className="text-xs text-slate-300 mb-1">
+                  <TrendingUp className="w-3 h-3 inline mr-1" />
+                  Table {idx + 1}
+                </div>
+                <div className="font-mono font-bold text-base text-blue-400">
+                  {pos[idx].toFixed(1)}
+                  <span className="text-xs text-slate-400 ml-1">mm</span>
                 </div>
               </div>
             </button>
@@ -81,22 +79,20 @@ export default function PositionsAndSensors({
             <button
               onClick={() => handleSensorClick(idx)}
               disabled={!isConnected}
-              className={`w-full rounded p-3 transition-all text-left ${
+              className={`rounded p-2 transition-all text-left flex-1 ${
                 selectedSensorIdx === idx
                   ? 'bg-red-600 ring-2 ring-red-400'
                   : 'bg-slate-800 hover:bg-slate-700'
               } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-xs text-slate-300 mb-1">
-                    <Zap className="w-4 h-4 inline mr-1" />
-                    Sensor {idx + 1}
-                  </div>
-                  <div className="font-mono font-bold text-lg text-yellow-400">
-                    {sens[idx].toFixed(2)}
-                    <span className="text-xs text-slate-400 ml-1">N</span>
-                  </div>
+              <div>
+                <div className="text-xs text-slate-300 mb-1">
+                  <Zap className="w-3 h-3 inline mr-1" />
+                  Sensor {idx + 1}
+                </div>
+                <div className="font-mono font-bold text-base text-yellow-400">
+                  {sens[idx].toFixed(2)}
+                  <span className="text-xs text-slate-400 ml-1">N</span>
                 </div>
               </div>
             </button>
@@ -104,12 +100,12 @@ export default function PositionsAndSensors({
         ))}
       </div>
 
-      {/* GOTO Position */}
-      <div className="bg-slate-700 rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Move className="w-5 h-5 text-purple-400" />
-          <h3 className="font-semibold text-slate-200">
-            GOTO Position {selectedTableIdx !== null ? `(Table ${selectedTableIdx + 1})` : ''}
+      {/* GOTO Position - Compact */}
+      <div className="bg-slate-700 rounded-lg p-3">
+        <div className="flex items-center gap-2 mb-2">
+          <Move className="w-4 h-4 text-purple-400" />
+          <h3 className="text-sm font-semibold text-slate-200">
+            GOTO {selectedTableIdx !== null ? `T${selectedTableIdx + 1}` : ''}
           </h3>
         </div>
         <div className="flex gap-2">
@@ -121,25 +117,22 @@ export default function PositionsAndSensors({
             value={gotoPosition}
             onChange={handleGotoChange}
             disabled={!isConnected}
-            className="flex-1 px-4 py-2 bg-slate-600 rounded-lg border border-slate-500 focus:border-purple-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed font-mono"
+            className="flex-1 px-2 py-1 bg-slate-600 rounded border border-slate-500 focus:border-purple-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed font-mono text-xs"
           />
-          <span className="px-3 py-2 bg-slate-800 rounded-lg text-slate-400">mm</span>
+          <span className="px-2 py-1 bg-slate-800 rounded text-slate-400 text-xs">mm</span>
           <button
             onClick={handleGotoSend}
             disabled={!isConnected}
-            className="px-6 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg transition-colors font-semibold"
+            className="px-3 py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-xs font-semibold"
           >
             Send
           </button>
         </div>
-        <div className="mt-2 text-xs text-slate-400">
-          Max travel: 96mm {selectedTableIdx !== null && `| Selected: Table ${selectedTableIdx + 1}`}
-        </div>
       </div>
 
       {/* Info */}
-      <div className="bg-slate-800 rounded-lg p-3 text-xs text-slate-400">
-        💡 Click on a sensor to view its force graph over time
+      <div className="bg-slate-800 rounded-lg p-2 text-xs text-slate-400 text-center">
+        Click sensor for graph
       </div>
     </div>
   );
