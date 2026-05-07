@@ -6,15 +6,18 @@ interface PositionsAndSensorsProps {
   sensors: number[];    // 4 force sensors
   isConnected: boolean;
   onGotoCommand?: (position: number) => void;
+  onSensorSelect?: (sensorIdx: number) => void;
 }
 
 export default function PositionsAndSensors({
   positions = [0, 0, 0, 0],
   sensors = [0, 0, 0, 0],
   isConnected = false,
-  onGotoCommand
+  onGotoCommand,
+  onSensorSelect
 }: PositionsAndSensorsProps) {
   const [selectedTableIdx, setSelectedTableIdx] = useState<number | null>(null);
+  const [selectedSensorIdx, setSelectedSensorIdx] = useState<number | null>(null);
   const [gotoPosition, setGotoPosition] = useState(0);
 
   // Ensure we have 4 values
@@ -24,6 +27,13 @@ export default function PositionsAndSensors({
   const handleTableClick = (idx: number) => {
     setSelectedTableIdx(idx);
     setGotoPosition(pos[idx]);
+  };
+
+  const handleSensorClick = (idx: number) => {
+    setSelectedSensorIdx(idx);
+    if (onSensorSelect) {
+      onSensorSelect(idx);
+    }
   };
 
   const handleGotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -39,51 +49,59 @@ export default function PositionsAndSensors({
 
   return (
     <div className="space-y-4">
-      {/* Table Positions - Clickable */}
-      <div className="bg-slate-700 rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <TrendingUp className="w-5 h-5 text-blue-400" />
-          <h3 className="font-semibold text-slate-200">Table Positions</h3>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          {pos.map((position, idx) => (
+      {/* Table + Sensor Pairs */}
+      <div className="space-y-3">
+        {[0, 1, 2, 3].map((idx) => (
+          <div key={idx} className="bg-slate-700 rounded-lg p-4 space-y-2">
+            {/* Table */}
             <button
-              key={idx}
               onClick={() => handleTableClick(idx)}
               disabled={!isConnected}
-              className={`rounded p-3 transition-all text-left ${
+              className={`w-full rounded p-3 transition-all text-left ${
                 selectedTableIdx === idx
                   ? 'bg-blue-600 ring-2 ring-blue-400'
                   : 'bg-slate-800 hover:bg-slate-700'
               } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
-              <div className="text-xs text-slate-300 mb-1">Table {idx + 1}</div>
-              <div className="font-mono font-bold text-lg text-blue-400">
-                {position.toFixed(1)}
-                <span className="text-xs text-slate-400 ml-1">mm</span>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs text-slate-300 mb-1">
+                    <TrendingUp className="w-4 h-4 inline mr-1" />
+                    Table {idx + 1}
+                  </div>
+                  <div className="font-mono font-bold text-lg text-blue-400">
+                    {pos[idx].toFixed(1)}
+                    <span className="text-xs text-slate-400 ml-1">mm</span>
+                  </div>
+                </div>
               </div>
             </button>
-          ))}
-        </div>
-      </div>
 
-      {/* Force Sensors */}
-      <div className="bg-slate-700 rounded-lg p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Zap className="w-5 h-5 text-yellow-400" />
-          <h3 className="font-semibold text-slate-200">Force Sensors</h3>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          {sens.map((sensor, idx) => (
-            <div key={idx} className="bg-slate-800 rounded p-3">
-              <div className="text-xs text-slate-400 mb-1">Sensor {idx + 1}</div>
-              <div className="font-mono font-bold text-lg text-yellow-400">
-                {sensor.toFixed(2)}
-                <span className="text-xs text-slate-400 ml-1">N</span>
+            {/* Sensor - Clickable to show graph */}
+            <button
+              onClick={() => handleSensorClick(idx)}
+              disabled={!isConnected}
+              className={`w-full rounded p-3 transition-all text-left ${
+                selectedSensorIdx === idx
+                  ? 'bg-red-600 ring-2 ring-red-400'
+                  : 'bg-slate-800 hover:bg-slate-700'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs text-slate-300 mb-1">
+                    <Zap className="w-4 h-4 inline mr-1" />
+                    Sensor {idx + 1}
+                  </div>
+                  <div className="font-mono font-bold text-lg text-yellow-400">
+                    {sens[idx].toFixed(2)}
+                    <span className="text-xs text-slate-400 ml-1">N</span>
+                  </div>
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            </button>
+          </div>
+        ))}
       </div>
 
       {/* GOTO Position */}
@@ -117,6 +135,11 @@ export default function PositionsAndSensors({
         <div className="mt-2 text-xs text-slate-400">
           Max travel: 96mm {selectedTableIdx !== null && `| Selected: Table ${selectedTableIdx + 1}`}
         </div>
+      </div>
+
+      {/* Info */}
+      <div className="bg-slate-800 rounded-lg p-3 text-xs text-slate-400">
+        💡 Click on a sensor to view its force graph over time
       </div>
     </div>
   );

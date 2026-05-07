@@ -5,6 +5,7 @@ import MotionControl from './components/MotionControl';
 import StatusPanelSimple from './components/StatusPanelSimple';
 import SerialMonitor from './components/SerialMonitor';
 import PositionsAndSensors from './components/PositionsAndSensors';
+import ForceGraph from './components/ForceGraph';
 import { useMachineController } from './hooks/useMachineController';
 
 interface SerialLog {
@@ -40,6 +41,7 @@ export default function App() {
   const [serialLogs, setSerialLogs] = useState<SerialLog[]>([]);
   const [selectedPreset, setSelectedPreset] = useState('custom');
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [selectedSensorIdx, setSelectedSensorIdx] = useState<number | null>(null);
 
   // Load available ports on mount and when needed
   useEffect(() => {
@@ -196,25 +198,35 @@ export default function App() {
           />
         </div>
 
-        {/* Motion Control */}
+        {/* Motion Control or Force Graph */}
         <div className="xl:col-span-2 space-y-6">
           <div className="bg-slate-800 rounded-lg p-6">
-            <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-              <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
-              Motion Control
-            </h2>
-            {machineState ? (
-              <MotionControl
-                frequency={machineState?.frequency_hz || 0}
-                onChange={handleFrequencyChange}
-                isConnected={isConnected}
-                selectedPreset={selectedPreset}
-                onPresetChange={handlePresetChange}
-                machineState={machineState?.machine_status || 'DISCONNECTED'}
-                pendingCommands={{}}
+            {selectedSensorIdx !== null && machineState ? (
+              <ForceGraph
+                sensorIdx={selectedSensorIdx}
+                currentForce={machineState?.sensors?.[selectedSensorIdx] || 0}
+                onClose={() => setSelectedSensorIdx(null)}
               />
             ) : (
-              <div className="text-slate-400">Loading motion control...</div>
+              <>
+                <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+                  <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
+                  Motion Control
+                </h2>
+                {machineState ? (
+                  <MotionControl
+                    frequency={machineState?.frequency_hz || 0}
+                    onChange={handleFrequencyChange}
+                    isConnected={isConnected}
+                    selectedPreset={selectedPreset}
+                    onPresetChange={handlePresetChange}
+                    machineState={machineState?.machine_status || 'DISCONNECTED'}
+                    pendingCommands={{}}
+                  />
+                ) : (
+                  <div className="text-slate-400">Loading motion control...</div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -227,6 +239,7 @@ export default function App() {
               sensors={machineState?.sensors || [0, 0, 0, 0]}
               isConnected={isConnected}
               onGotoCommand={(position) => handleCommand(`GOTO:${position}`)}
+              onSensorSelect={(sensorIdx) => setSelectedSensorIdx(sensorIdx)}
             />
           ) : (
             <div className="text-slate-400">Loading sensors...</div>
