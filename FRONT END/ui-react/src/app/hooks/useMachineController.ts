@@ -55,13 +55,34 @@ export const useMachineController = () => {
 
       // Get initial machine state after successful connection
       try {
+        console.log('Fetching machine state from:', `${API_BASE}/status`);
         const statusResponse = await fetch(`${API_BASE}/status`);
-        if (statusResponse.ok) {
-          const state = await statusResponse.json();
-          setMachineState(state);
+        console.log('Status response:', statusResponse.status, statusResponse.statusText);
+
+        if (!statusResponse.ok) {
+          const errorText = await statusResponse.text();
+          console.error('Status API error:', errorText);
+          throw new Error(`Status API returned ${statusResponse.status}`);
         }
+
+        const state = await statusResponse.json();
+        console.log('Machine state loaded:', state);
+        setMachineState(state);
       } catch (err) {
-        console.error('Failed to get initial status:', err);
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        console.error('Failed to get initial status:', errorMsg);
+        // Don't fail the connection just because status fetch failed
+        setMachineState({
+          preset_name: 'UNKNOWN',
+          frequency_hz: null,
+          t_speed_percent: 100,
+          position: null,
+          motor_current: null,
+          force_sensor: null,
+          errors: 'Status unavailable',
+          slave_status: 'UNKNOWN',
+          machine_status: 'CONNECTED',
+        });
       }
     } catch (err) {
       setError('Connection failed: ' + String(err));
