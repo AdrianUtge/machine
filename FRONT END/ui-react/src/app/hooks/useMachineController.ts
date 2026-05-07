@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 
 const API_BASE = 'http://localhost:8000/api';
 
@@ -25,6 +25,7 @@ export const useMachineController = () => {
   const [logs, setLogs] = useState<SerialLog[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastLogCount, setLastLogCount] = useState(0);
 
   // Get available ports
   const getAvailablePorts = useCallback(async () => {
@@ -191,15 +192,36 @@ export const useMachineController = () => {
   // Refresh logs
   const refreshLogs = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/logs?limit=100`);
+      const response = await fetch(`${API_BASE}/logs?limit=200`);
       if (response.ok) {
         const data = await response.json();
-        setLogs(data.logs || []);
+        const logArray = (data.logs || []).map((log: any, idx: number) => ({
+          timestamp: new Date().toLocaleTimeString(),
+          type: log.type || 'state',
+          message: log.message,
+        }));
+        setLogs(logArray);
+        setLastLogCount(logArray.length);
       }
     } catch (err) {
       console.error('Failed to refresh logs:', err);
     }
   }, []);
+
+  // Setup automatic polling of logs when connected
+  useEffect(() => {
+    if (!isConnected) return;
+
+    // Initial load
+    refreshLogs();
+
+    // Setup polling interval - refresh every 200ms for real-time feel
+    const pollInterval = setInterval(() => {
+      refreshLogs();
+    }, 200);
+
+    return () => clearInterval(pollInterval);
+  }, [isConnected, refreshLogs]);
 
   return {
     // State

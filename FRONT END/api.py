@@ -9,6 +9,8 @@ from pydantic import BaseModel
 from typing import Optional
 import asyncio
 import json
+import threading
+import time
 
 from comm.serial_link import SerialLink
 from config import DEFAULT_BAUDRATE, DEFAULT_PORT, DEFAULT_TIMEOUT
@@ -62,6 +64,8 @@ app.add_middleware(
 # Global controller instance
 controller: Optional[MachineController] = None
 serial_logs: list[SerialLogEntry] = []
+background_reader_thread: Optional[threading.Thread] = None
+is_reading: bool = False
 
 # --- Helper Functions -----------------------------------------------
 
@@ -70,6 +74,42 @@ def log_action(type_: str, message: str) -> None:
     serial_logs.append(SerialLogEntry(type=type_, message=message))
     if len(serial_logs) > 200:
         serial_logs.pop(0)
+
+def background_reader():
+    """Thread that continuously reads from serial port and logs everything."""
+    global controller, is_reading
+
+    while is_reading:
+        try:
+            if controller and controller.link.ser:
+                line = controller.read_once()
+                if line:
+                    log_action("response", line)
+            time.sleep(0.05)  # Small delay to avoid 100% CPU
+        except Exception as e:
+            log_action("error", f"Read error: {str(e)}")
+            time.sleep(0.5)
+
+def start_background_reader():
+    """Start the background reader thread."""
+    global background_reader_thread, is_reading
+
+    if is_reading:
+        return  # Already running
+
+    is_reading = True
+    background_reader_thread = threading.Thread(target=background_reader, daemon=True)
+    background_reader_thread.start()
+    print("✓ Background serial reader started")
+
+def stop_background_reader():
+    """Stop the background reader thread."""
+    global is_reading, background_reader_thread
+
+    is_reading = False
+    if background_reader_thread:
+        background_reader_thread.join(timeout=1.0)
+    print("✓ Background serial reader stopped")
 
 def get_state_dict(state: MachineState) -> MachineStateResponse:
     """Convert MachineState to response dict."""
@@ -113,6 +153,8 @@ async def connect(request: ConnectRequest):
 
         if ok:
             log_action("state", f"Connected to {request.port}")
+            # Start background reader for continuous monitoring
+            start_background_reader()
             return {"success": True, "message": f"Connected to {request.port}"}
         else:
             log_action("error", f"Failed to connect to {request.port}")
@@ -128,6 +170,9 @@ async def disconnect():
 
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
+
+    # Stop background reader
+    stop_background_reader()
 
     controller.disconnect()
     log_action("state", "Disconnected")
@@ -258,7 +303,7 @@ async def send_manual_command(request: dict):
 
     controller._send(command)
     log_action("command", command)
-    controller.read_once()
+    _read_all_responses()  # Read all responses just like other commands
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
