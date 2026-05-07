@@ -139,10 +139,24 @@ async def get_status():
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
 
-    controller.read_once()
+    # Read all available data from serial port
+    for _ in range(10):  # Read up to 10 lines
+        line = controller.read_once()
+        if not line:
+            break
+
     return get_state_dict(controller.state)
 
 # --- Command Endpoints -----------------------------------------------
+
+def _read_all_responses():
+    """Helper to read all available responses from serial port."""
+    if not controller:
+        return
+    for _ in range(20):  # Read up to 20 lines
+        line = controller.read_once()
+        if not line:
+            break
 
 @app.post("/api/command/home")
 async def home():
@@ -152,7 +166,7 @@ async def home():
 
     controller.home()
     log_action("command", "HOME")
-    controller.read_once()
+    _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
@@ -164,7 +178,7 @@ async def start():
 
     controller.start()
     log_action("command", "START")
-    controller.read_once()
+    _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
@@ -176,7 +190,7 @@ async def stop():
 
     controller.hard_reset()
     log_action("command", "STOP")
-    controller.read_once()
+    _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
@@ -188,7 +202,7 @@ async def hard_reset():
 
     controller.hard_reset()
     log_action("command", "HARD_RESET")
-    controller.read_once()
+    _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
@@ -200,7 +214,7 @@ async def set_frequency(request: FrequencyRequest):
 
     controller.set_frequency(request.frequency)
     log_action("command", f"SET_FREQ:{request.frequency}")
-    controller.read_once()
+    _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
@@ -212,7 +226,7 @@ async def set_speed(request: SpeedRequest):
 
     controller.set_speed(request.speed)
     log_action("command", f"SET_SPEED:{request.speed}")
-    controller.read_once()
+    _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
@@ -228,7 +242,7 @@ async def apply_preset(request: PresetRequest):
         raise HTTPException(status_code=400, detail="Invalid preset")
 
     log_action("command", f"PRESET:{request.preset}")
-    controller.read_once()
+    _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
