@@ -192,21 +192,6 @@ export const useMachineController = () => {
     [sendCommand]
   );
 
-  // Get status to update machine state
-  const getStatus = useCallback(async () => {
-    if (!isConnected) return;
-
-    try {
-      const response = await fetch(`${API_BASE}/status`);
-      if (response.ok) {
-        const state = await response.json();
-        setMachineState(state);
-      }
-    } catch (err) {
-      console.error('Failed to get status:', err);
-    }
-  }, [isConnected]);
-
   // Refresh logs
   const refreshLogs = useCallback(async () => {
     try {
@@ -229,14 +214,23 @@ export const useMachineController = () => {
           const timeSinceLastLog = Date.now() - lastLogTimeRef.current;
           if (timeSinceLastLog > STATUS_REQUEST_TIMEOUT && isConnected) {
             console.log('No serial data for', timeSinceLastLog, 'ms - requesting status');
-            await getStatus();
+            // Request status directly
+            try {
+              const statusResponse = await fetch(`${API_BASE}/status`);
+              if (statusResponse.ok) {
+                const state = await statusResponse.json();
+                setMachineState(state);
+              }
+            } catch (err) {
+              console.error('Failed to auto-request status:', err);
+            }
           }
         }
       }
     } catch (err) {
       console.error('Failed to refresh logs:', err);
     }
-  }, [isConnected, getStatus]);
+  }, [isConnected]);
 
   // Setup automatic polling of logs when connected
   useEffect(() => {
