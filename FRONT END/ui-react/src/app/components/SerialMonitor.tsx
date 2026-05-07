@@ -77,6 +77,23 @@ export default function SerialMonitor({
     }
   };
 
+  const getLogPrefix = (type: SerialLog['type']) => {
+    switch (type) {
+      case 'command':
+        return '> ';
+      case 'response':
+        return '< ';
+      case 'state':
+        return '= ';
+      case 'error':
+        return '! ';
+      case 'done':
+        return '✓ ';
+      default:
+        return '  ';
+    }
+  };
+
   return (
     <div className="bg-slate-800 rounded-lg overflow-hidden">
       <div className="flex items-center justify-between p-4 border-b border-slate-700">
@@ -128,14 +145,15 @@ export default function SerialMonitor({
         </div>
       </div>
 
-      <div className="h-96 overflow-y-auto p-4 bg-slate-900 font-mono text-sm border-b border-slate-700">
+      <div className="h-96 overflow-y-auto p-2 bg-slate-900 font-mono text-xs border-b border-slate-700">
         {filteredLogs.length === 0 ? (
           <div className="text-slate-500 text-center py-8">No logs yet</div>
         ) : (
           filteredLogs.map((log, index) => (
-            <div key={index} className="mb-1">
-              <span className="text-slate-500">[{log.timestamp}]</span>{' '}
-              <span className={getLogColor(log.type)}>{log.message}</span>
+            <div key={index} className="mb-0.5 flex gap-1 overflow-x-auto">
+              <span className="text-slate-600 whitespace-nowrap shrink-0">{log.timestamp}</span>
+              <span className={`${getLogColor(log.type)} whitespace-nowrap shrink-0`}>{getLogPrefix(log.type)}</span>
+              <span className={`${getLogColor(log.type)} break-word min-w-0`}>{log.message}</span>
             </div>
           ))
         )}
