@@ -28,6 +28,8 @@ export default function App() {
     setFrequency,
     setSpeed,
     applyPreset,
+    sendManualCommand,
+    refreshLogs,
   } = useMachineController();
 
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
@@ -224,7 +226,13 @@ export default function App() {
 
       {/* Serial Monitor */}
       <div className="mt-6">
-        <SerialMonitor logs={serialLogs} onClear={() => setSerialLogs([])} />
+        <SerialMonitor
+          logs={serialLogs}
+          onClear={() => setSerialLogs([])}
+          onSendCommand={sendManualCommand}
+          onRefreshLogs={refreshLogs}
+          isLoading={isLoading}
+        />
       </div>
     </div>
   );
