@@ -19,6 +19,8 @@ export interface SerialLog {
   message: string;
 }
 
+const STATUS_REQUEST_TIMEOUT = 3000; // 3 seconds - if no data, request status
+
 export const useMachineController = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [machineState, setMachineState] = useState<MachineState | null>(null);
@@ -26,6 +28,7 @@ export const useMachineController = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastLogCount, setLastLogCount] = useState(0);
+  const lastLogTimeRef = useRef<number>(Date.now());
 
   // Get available ports
   const getAvailablePorts = useCallback(async () => {
@@ -189,6 +192,21 @@ export const useMachineController = () => {
     [sendCommand]
   );
 
+  // Get status to update machine state
+  const getStatus = useCallback(async () => {
+    if (!isConnected) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/status`);
+      if (response.ok) {
+        const state = await response.json();
+        setMachineState(state);
+      }
+    } catch (err) {
+      console.error('Failed to get status:', err);
+    }
+  }, [isConnected]);
+
   // Refresh logs
   const refreshLogs = useCallback(async () => {
     try {
@@ -202,11 +220,23 @@ export const useMachineController = () => {
         }));
         setLogs(logArray);
         setLastLogCount(logArray.length);
+
+        // Update last log time if we got new logs
+        if (logArray.length > 0) {
+          lastLogTimeRef.current = Date.now();
+        } else {
+          // If no logs for a while, request status to get data
+          const timeSinceLastLog = Date.now() - lastLogTimeRef.current;
+          if (timeSinceLastLog > STATUS_REQUEST_TIMEOUT && isConnected) {
+            console.log('No serial data for', timeSinceLastLog, 'ms - requesting status');
+            await getStatus();
+          }
+        }
       }
     } catch (err) {
       console.error('Failed to refresh logs:', err);
     }
-  }, []);
+  }, [isConnected, getStatus]);
 
   // Setup automatic polling of logs when connected
   useEffect(() => {
