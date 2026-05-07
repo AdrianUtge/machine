@@ -225,6 +225,8 @@ export default function App() {
             <PositionsAndSensors
               positions={machineState?.positions || [0, 0, 0, 0]}
               sensors={machineState?.sensors || [0, 0, 0, 0]}
+              isConnected={isConnected}
+              onGotoCommand={(position) => handleCommand(`GOTO:${position}`)}
             />
           ) : (
             <div className="text-slate-400">Loading sensors...</div>

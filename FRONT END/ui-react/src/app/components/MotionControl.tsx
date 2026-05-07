@@ -26,7 +26,6 @@ export default function MotionControl({
   machineState
 }: MotionControlProps) {
   const [targetFrequency, setTargetFrequency] = useState(frequency);
-  const [gotoPosition, setGotoPosition] = useState(0);
 
   const presets = [
     { value: 'custom', label: 'Custom', hz: null },
@@ -66,10 +65,6 @@ export default function MotionControl({
       // Custom preset - don't send anything, just update selection
       onPresetChange('custom');
     }
-  };
-
-  const handleGoto = () => {
-    onCommand(`GOTO:${gotoPosition}`);
   };
 
   const isCommandPending = (cmd: string) => pendingCommands[cmd] === 'pending';
@@ -122,31 +117,6 @@ export default function MotionControl({
           <Power className="w-5 h-5" />
           SHUTDOWN
         </button>
-      </div>
-
-      {/* GOTO Command */}
-      <div className="bg-slate-700 rounded-lg p-4">
-        <label className="block text-sm font-semibold text-slate-300 mb-2">GOTO Position</label>
-        <div className="flex gap-2">
-          <input
-            type="number"
-            min="0"
-            max="1000"
-            step="0.1"
-            value={gotoPosition}
-            onChange={(e) => setGotoPosition(parseFloat(e.target.value))}
-            disabled={!isConnected}
-            className="flex-1 px-4 py-2 bg-slate-600 rounded-lg border border-slate-500 focus:border-blue-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed font-mono"
-          />
-          <span className="px-3 py-2 bg-slate-800 rounded-lg text-slate-400">mm</span>
-          <button
-            onClick={handleGoto}
-            disabled={!isConnected || isCommandPending('GOTO')}
-            className="px-6 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg transition-colors font-semibold"
-          >
-            {isCommandPending('GOTO') ? 'Moving...' : 'Send'}
-          </button>
-        </div>
       </div>
 
       {/* Frequency Control */}
