@@ -33,10 +33,12 @@ void loop()
 {
     g_serialParser.update(Serial);
 
-    while (g_serialParser.hasLine())
+    int iterations = 0;
+    while (g_serialParser.hasLine() && iterations < 10)
     {
         String line = g_serialParser.popLine();
         g_commandDispatcher.dispatch(line, Serial);
+        iterations++;
     }
 
     g_machineState.update();

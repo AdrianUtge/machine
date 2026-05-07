@@ -11,7 +11,8 @@ CommandDispatcher::CommandDispatcher(MachineState& machineState)
 
 void CommandDispatcher::dispatch(const String& line, Stream& out)
 {
-    const String trimmedLine = line;
+    String trimmedLine = line;
+    trimmedLine.trim();
     const int separatorIndex = trimmedLine.indexOf(':');
 
     String command;
