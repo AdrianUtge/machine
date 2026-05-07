@@ -33,9 +33,10 @@ export default function App() {
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(true);
   const [portsError, setPortsError] = useState<string | null>(null);
-  const [showConnection, setShowConnection] = useState(!isConnected);
+  const [showConnection, setShowConnection] = useState(true);
   const [serialLogs, setSerialLogs] = useState<SerialLog[]>([]);
   const [selectedPreset, setSelectedPreset] = useState('custom');
+  const [connectionError, setConnectionError] = useState<string | null>(null);
 
   // Load available ports on mount and when needed
   useEffect(() => {
@@ -58,6 +59,14 @@ export default function App() {
     loadPorts();
   }, [getAvailablePorts]);
 
+  // Hide connection screen when successfully connected
+  useEffect(() => {
+    if (isConnected) {
+      setShowConnection(false);
+      setConnectionError(null);
+    }
+  }, [isConnected]);
+
   // Map API logs to serial logs with timestamps
   useEffect(() => {
     const newLogs = logs.map((log: any, idx: number) => ({
@@ -70,8 +79,24 @@ export default function App() {
   }, [logs]);
 
   const handleConnect = async (port: string) => {
-    await connect(port);
-    setShowConnection(false);
+    setConnectionError(null);
+    try {
+      await connect(port);
+      // Connection will update isConnected state
+      // We'll proceed to main screen after connection success
+      setTimeout(() => {
+        // Give time for state to update
+        if (error) {
+          setConnectionError(error);
+        } else {
+          setShowConnection(false);
+        }
+      }, 100);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to connect';
+      setConnectionError(errorMsg);
+      console.error('Connection error:', err);
+    }
   };
 
   const handleDisconnect = async () => {
@@ -101,7 +126,7 @@ export default function App() {
         availablePorts={availablePorts}
         onConnect={handleConnect}
         isLoading={loadingPorts}
-        error={portsError || error}
+        error={connectionError || portsError}
       />
     );
   }
