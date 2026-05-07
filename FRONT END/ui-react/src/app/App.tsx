@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import ConnectionScreen from './components/ConnectionScreen';
 import MotionControl from './components/MotionControl';
-import StatusPanel from './components/StatusPanel';
+import StatusPanelSimple from './components/StatusPanelSimple';
 import SerialMonitor from './components/SerialMonitor';
 import { useMachineController } from './hooks/useMachineController';
 
@@ -186,17 +186,11 @@ export default function App() {
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
         {/* Status Panel */}
         <div className="xl:col-span-1">
-          {machineState ? (
-            <StatusPanel
-              isConnected={isConnected}
-              machineState={machineState}
-              onCommand={handleCommand}
-            />
-          ) : (
-            <div className="bg-slate-800 rounded-lg p-6 text-slate-400">
-              <p>Loading machine state...</p>
-            </div>
-          )}
+          <StatusPanelSimple
+            isConnected={isConnected}
+            machineState={machineState}
+            onCommand={handleCommand}
+          />
         </div>
 
         {/* Motion Control */}
