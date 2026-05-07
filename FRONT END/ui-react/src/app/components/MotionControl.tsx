@@ -59,8 +59,17 @@ export default function MotionControl({
   };
 
   const handlePresetSelect = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const preset = e.target.value;
-    onPresetChange(preset);
+    const presetValue = e.target.value;
+    const selectedPresetData = presets.find(p => p.value === presetValue);
+
+    if (selectedPresetData && selectedPresetData.hz !== null) {
+      // Send SET_FREQ with the preset frequency value
+      onChange(selectedPresetData.hz);
+      onPresetChange(presetValue);
+    } else if (presetValue === 'custom') {
+      // Custom preset - don't send anything, just update selection
+      onPresetChange('custom');
+    }
   };
 
   const handleGoto = () => {
