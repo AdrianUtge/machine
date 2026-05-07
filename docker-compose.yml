@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./FRONT\ END
+      dockerfile: Dockerfile.backend
+    container_name: control-panel-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - /dev:/dev  # Accès aux ports série
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python -m uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - control-network
+
+  # React Frontend
+  frontend:
+    build:
+      context: ./FRONT\ END/ui-react
+      dockerfile: Dockerfile
+    container_name: control-panel-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      - VITE_API_URL=http://backend:8000
+    networks:
+      - control-network
+
+networks:
+  control-network:
+    driver: bridge
