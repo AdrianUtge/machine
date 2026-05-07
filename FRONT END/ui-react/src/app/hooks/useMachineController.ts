@@ -65,12 +65,21 @@ export const useMachineController = () => {
           throw new Error(`Status API returned ${statusResponse.status}`);
         }
 
-        const state = await statusResponse.json();
+        const responseText = await statusResponse.text();
+        console.log('Raw response:', responseText);
+
+        const state = JSON.parse(responseText);
         console.log('Machine state loaded:', state);
-        setMachineState(state);
+
+        // Validate state has required fields
+        if (state && typeof state === 'object') {
+          setMachineState(state);
+        } else {
+          throw new Error('Invalid state format');
+        }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error('Failed to get initial status:', errorMsg);
+        console.error('Failed to get initial status:', errorMsg, err);
         // Don't fail the connection just because status fetch failed
         setMachineState({
           preset_name: 'UNKNOWN',
