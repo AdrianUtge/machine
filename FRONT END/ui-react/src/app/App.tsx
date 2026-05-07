@@ -120,6 +120,8 @@ export default function App() {
     else if (command === 'STOP') stop();
   };
 
+  console.log('App state:', { showConnection, isConnected, machineState });
+
   if (showConnection) {
     return (
       <ConnectionScreen
@@ -132,7 +134,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6" style={{ minHeight: '100vh' }}>
       {/* Header */}
       <div className="mb-6 flex justify-between items-center">
         <div>
@@ -173,15 +175,28 @@ export default function App() {
         </div>
       </div>
 
+      {/* Debug Info */}
+      <div className="mb-6 p-4 bg-slate-800 rounded-lg text-sm">
+        <p className="text-slate-300">Connected: {isConnected ? 'Yes' : 'No'}</p>
+        <p className="text-slate-300">Machine Status: {machineState?.machine_status || 'N/A'}</p>
+        <p className="text-slate-300">Frequency: {machineState?.frequency_hz || 0} Hz</p>
+      </div>
+
       {/* Main Content */}
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
         {/* Status Panel */}
         <div className="xl:col-span-1">
-          <StatusPanel
-            isConnected={isConnected}
-            machineState={machineState}
-            onCommand={handleCommand}
-          />
+          {machineState ? (
+            <StatusPanel
+              isConnected={isConnected}
+              machineState={machineState}
+              onCommand={handleCommand}
+            />
+          ) : (
+            <div className="bg-slate-800 rounded-lg p-6 text-slate-400">
+              <p>Loading machine state...</p>
+            </div>
+          )}
         </div>
 
         {/* Motion Control */}
@@ -191,16 +206,20 @@ export default function App() {
               <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
               Motion Control
             </h2>
-            <MotionControl
-              frequency={machineState?.frequency_hz || 0}
-              speed={machineState?.t_speed_percent || 100}
-              onChange={handleFrequencyChange}
-              isConnected={isConnected}
-              selectedPreset={selectedPreset}
-              onPresetChange={handlePresetChange}
-              onSpeedChange={setSpeed}
-              machineState={machineState?.machine_status || 'DISCONNECTED'}
-            />
+            {machineState ? (
+              <MotionControl
+                frequency={machineState?.frequency_hz || 0}
+                speed={machineState?.t_speed_percent || 100}
+                onChange={handleFrequencyChange}
+                isConnected={isConnected}
+                selectedPreset={selectedPreset}
+                onPresetChange={handlePresetChange}
+                onSpeedChange={setSpeed}
+                machineState={machineState?.machine_status || 'DISCONNECTED'}
+              />
+            ) : (
+              <div className="text-slate-400">Loading motion control...</div>
+            )}
           </div>
         </div>
 
