@@ -52,8 +52,17 @@ export const useMachineController = () => {
       if (!response.ok) throw new Error('Connection failed');
 
       setIsConnected(true);
-      // Get initial state
-      await getStatus();
+
+      // Get initial machine state after successful connection
+      try {
+        const statusResponse = await fetch(`${API_BASE}/status`);
+        if (statusResponse.ok) {
+          const state = await statusResponse.json();
+          setMachineState(state);
+        }
+      } catch (err) {
+        console.error('Failed to get initial status:', err);
+      }
     } catch (err) {
       setError('Connection failed: ' + String(err));
       setIsConnected(false);
