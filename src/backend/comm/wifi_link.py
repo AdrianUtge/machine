@@ -170,13 +170,15 @@ class WiFiLink:
         """
         Send command line to ESP8266 (compatibility with SerialLink).
 
-        Parses protocol commands and converts to WiFi API calls.
+        Accepts both protocol format (S, H, M) and REST format (START, HOME, STOP).
+
         Examples:
-        - "M1000" → {"command": "START", "speed": 1000}
-        - "M0" → {"command": "STOP"}
-        - "H100" → {"command": "HOME"}
-        - "F50" → {"command": "FREQUENCY", "frequency": 50}
-        - "V75" → {"command": "SPEED", "speed": 75}
+        - "S" or "START" → START
+        - "H" or "HOME" → HOME
+        - "M" or "STOP" → STOP
+        - "R" or "HARD_RESET" → HARD_RESET
+        - "F50" → FREQUENCY with frequency=50
+        - "V75" → SPEED with speed=75
         """
         command_str = command_str.strip().upper()
 
@@ -185,12 +187,25 @@ class WiFiLink:
         if not command_str:
             return False
 
-        # Simple protocol parsing for Phase 1
+        # Direct REST command names (from protocol.py)
+        rest_commands = {
+            'START': ('START', {}),
+            'STOP': ('STOP', {}),
+            'HOME': ('HOME', {}),
+            'HARD_RESET': ('HARD_RESET', {}),
+        }
+
+        # Check if it's a direct REST command first
+        if command_str in rest_commands:
+            rest_cmd, params = rest_commands[command_str]
+            return self.send_command(rest_cmd, **params)
+
+        # Fall back to protocol letter parsing
         cmd_char = command_str[0] if command_str else ''
         cmd_param = command_str[1:] if len(command_str) > 1 else ''
 
-        # Map protocol commands to REST commands
-        command_map = {
+        # Map protocol single-letter commands to REST commands
+        protocol_map = {
             'H': ('HOME', {}),
             'S': ('START', {}),
             'M': ('STOP', {}),
@@ -199,11 +214,11 @@ class WiFiLink:
             'V': ('SPEED', {'speed': int(cmd_param) if cmd_param else 0}),
         }
 
-        if cmd_char in command_map:
-            rest_cmd, params = command_map[cmd_char]
+        if cmd_char in protocol_map:
+            rest_cmd, params = protocol_map[cmd_char]
             return self.send_command(rest_cmd, **params)
 
-        print(f"[WiFiLink] Unknown protocol command: {command_str}")
+        print(f"[WiFiLink] Unknown command: {command_str}")
         return False
 
     def write(self, data: str) -> bool:
