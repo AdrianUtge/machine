@@ -178,32 +178,33 @@ async def connect(request: ConnectRequest):
     try:
         # Check if this is a WiFi interface or a serial port
         if _is_wifi_interface(request.port):
-            # WiFi connection
-            if WiFiManager is None:
-                raise HTTPException(status_code=500, detail="WiFi manager not available")
-
+            # WiFi connection (AP Mode - ESP8266 broadcasts its own network)
             try:
-                wifi_manager = WiFiManager()
+                log_action("state", f"Attempting WiFi connection to {request.port}")
+                print(f"\n[WiFi] Connecting to: {request.port}")
 
-                # Verify we're on the correct WiFi network
-                if not wifi_manager.is_correct_wifi():
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Not on correct WiFi network. Expected: {wifi_manager.config.get('wifi', {}).get('ssid', 'unknown')}"
-                    )
+                # Load configuration
+                try:
+                    wifi_manager = WiFiManager()
+                except Exception as e:
+                    print(f"[WiFi] Warning: Could not load WiFiManager: {e}")
+                    wifi_manager = None
 
-                # Get NodeMCU configuration
-                nodeMcu_config = wifi_manager.config.get('nodeMcu', {})
-                if not nodeMcu_config:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="NodeMCU configuration not found in setup.json"
-                    )
+                # Get NodeMCU configuration from setup.json
+                if wifi_manager and wifi_manager.config:
+                    nodeMcu_config = wifi_manager.config.get('nodeMcu', {})
+                    print(f"[WiFi] Config found: {nodeMcu_config}")
+                else:
+                    print("[WiFi] No config found, using defaults")
+                    nodeMcu_config = {}
 
-                # Create WiFi link
-                ip = nodeMcu_config.get('ip')
+                # Get IP and port from config or use defaults (AP mode defaults)
+                ip = nodeMcu_config.get('ip', '192.168.4.1')  # Default AP mode IP
                 port = nodeMcu_config.get('port', 8080)
-                key = nodeMcu_config.get('key', '')
+                key = nodeMcu_config.get('key', 'bearer_token_secret')  # Default token
+
+                print(f"[WiFi] Connecting to ESP8266 at {ip}:{port}")
+                print(f"[WiFi] Using auth token: {'*' * len(key)}")
 
                 if not ip:
                     raise HTTPException(
@@ -211,15 +212,20 @@ async def connect(request: ConnectRequest):
                         detail="NodeMCU IP address not configured in setup.json"
                     )
 
+                # Create WiFi link
                 wifi_link = WiFiLink(ip=ip, port=port, auth_token=key)
 
-                # Test connection
+                # Test connection to ESP8266
+                print(f"[WiFi] Testing connectivity to {ip}:{port}...")
                 if not wifi_link.connect():
                     log_action("error", f"Failed to connect to NodeMCU at {ip}:{port}")
+                    print(f"[WiFi] ❌ Connection failed!")
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Failed to connect to NodeMCU at {ip}:{port}. Make sure:\n1. NodeMCU is powered on\n2. ESP8266 is connected to WiFi\n3. IP address and port are correct"
+                        detail=f"Failed to connect to NodeMCU at {ip}:{port}. Make sure:\n1. NodeMCU is powered on\n2. You're connected to '{nodeMcu_config.get('wifi', {}).get('ssid', 'NodeMCU-Control')}' WiFi\n3. IP address in setup.json is correct"
                     )
+
+                print(f"[WiFi] ✅ Connected to ESP8266!")
 
                 # Create controller with WiFi link
                 state = MachineState()
@@ -227,6 +233,8 @@ async def connect(request: ConnectRequest):
                 controller = MachineController(wifi_link, state, logger)
 
                 log_action("state", f"Connected via WiFi to {ip}:{port}")
+                print(f"[WiFi] MachineController initialized\n")
+
                 return {"success": True, "message": f"Connected via WiFi to {ip}:{port}"}
 
             except HTTPException:

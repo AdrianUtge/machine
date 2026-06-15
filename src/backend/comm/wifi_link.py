@@ -42,22 +42,49 @@ class WiFiLink:
     def connect(self) -> bool:
         """Test connection to ESP8266."""
         try:
+            url = f"{self.base_url}/api/status"
+            print(f"[WiFiLink] Testing connection to: {url}")
+            print(f"[WiFiLink] Timeout: {self.timeout}s")
+            print(f"[WiFiLink] Auth Header: Bearer {'*' * 20}")
+
             response = requests.get(
-                f"{self.base_url}/api/status",
+                url,
                 headers=self.headers,
                 timeout=self.timeout
             )
+
+            print(f"[WiFiLink] Response Status: {response.status_code}")
+            print(f"[WiFiLink] Response Headers: {dict(response.headers)}")
+
             self.connected = (response.status_code == 200)
+
             if self.connected:
+                print(f"[WiFiLink] ✅ Connected!")
                 logger.info(f"Connected to ESP8266 at {self.ip}:{self.port}")
             else:
+                print(f"[WiFiLink] ❌ ESP8266 returned status {response.status_code}")
+                print(f"[WiFiLink] Response Body: {response.text}")
                 logger.error(f"ESP8266 returned status {response.status_code}")
+
             return self.connected
+
         except requests.exceptions.ConnectionError as e:
+            print(f"[WiFiLink] ❌ Connection Error: {e}")
+            print(f"[WiFiLink] Could not reach {self.base_url}")
             logger.error(f"Failed to connect to ESP8266: {e}")
             self.connected = False
             return False
+
+        except requests.exceptions.Timeout as e:
+            print(f"[WiFiLink] ❌ Timeout Error: {e}")
+            print(f"[WiFiLink] ESP8266 did not respond within {self.timeout}s")
+            logger.error(f"Timeout connecting to ESP8266: {e}")
+            self.connected = False
+            return False
+
         except Exception as e:
+            print(f"[WiFiLink] ❌ Unexpected Error: {e}")
+            print(f"[WiFiLink] Error Type: {type(e).__name__}")
             logger.error(f"Unexpected error connecting to ESP8266: {e}")
             self.connected = False
             return False
