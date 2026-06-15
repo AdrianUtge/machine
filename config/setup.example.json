@@ -1,0 +1,23 @@
+{
+  "wifi": {
+    "ssid": "MonReseau",
+    "password": "MonMotDePasse123",
+    "timeout": 10
+  },
+  "nodeMcu": {
+    "ip": "192.168.1.100",
+    "port": 80,
+    "key": "9f8a7b6c5d4e3f2g1h0i",
+    "protocol": "http"
+  },
+  "serial": {
+    "port": "auto",
+    "baudrate": 115200,
+    "timeout": 1
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/setup.log"
+  },
+  "debug": false
+}

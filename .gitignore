@@ -52,3 +52,7 @@ yarn-error.log*
 .claude/
 .env
 *.log
+
+# Configuration files with sensitive data
+config/setup.json
+config/logs/

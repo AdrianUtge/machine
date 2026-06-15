@@ -1,0 +1,17 @@
+# Configuration avec données sensibles
+setup.json
+
+# Fichiers de log
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environnement virtuel
+venv/
+env/
