@@ -67,14 +67,35 @@ class SerialLogEntry(BaseModel):
 
 app = FastAPI(title="Control Panel API", version="1.0.0")
 
-# Enable CORS for React frontend
+# Enable CORS for React frontend - MUST be first middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
+# Global exception handler to ensure CORS headers are sent even on errors
+from fastapi import Request
+from fastapi.responses import JSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print(f"[ERROR] Unhandled exception: {exc}")
+    import traceback
+    traceback.print_exc()
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "*",
+            "Access-Control-Allow-Headers": "*",
+        }
+    )
 
 # Global controller instance
 controller: Optional[MachineController] = None
