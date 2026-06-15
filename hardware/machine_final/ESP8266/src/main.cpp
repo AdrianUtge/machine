@@ -105,20 +105,20 @@ void handleCommand() {
     }
 
     String body = server.arg("plain");
-    Serial.print("[REST] Received command: ");
+    Serial.print("[REST] Received JSON: ");
     Serial.println(body);
 
-    StaticJsonDocument<128> doc;
+    StaticJsonDocument<256> doc;
     DeserializationError error = deserializeJson(doc, body);
 
     if (error) {
-        Serial.println("[REST] ERROR: Invalid JSON");
+        Serial.println("[REST] ❌ Invalid JSON");
         server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
 
     if (!doc.containsKey("command")) {
-        Serial.println("[REST] ERROR: Missing command field");
+        Serial.println("[REST] ❌ Missing command field");
         server.send(400, "application/json", "{\"error\":\"Missing command field\"}");
         return;
     }
@@ -126,23 +126,63 @@ void handleCommand() {
     String command = doc["command"].as<String>();
     command.toUpperCase();
 
-    Serial.print("[CMD] Processing: ");
-    Serial.println(command);
+    // Commands: START, STOP, HOME, FREQUENCY, SPEED, PRESET, MANUAL
+    const char* validCommands[] = {
+        "START", "STOP", "HOME", "HARD_RESET",
+        "FREQUENCY", "SPEED", "PRESET", "MANUAL", "STATUS"
+    };
 
-    // Valider la commande
-    if (command != "HIGH" && command != "LOW" && command != "STATUS") {
-        Serial.println("[CMD] ERROR: Unknown command");
+    bool isValid = false;
+    for (int i = 0; i < 9; i++) {
+        if (command == validCommands[i]) {
+            isValid = true;
+            break;
+        }
+    }
+
+    if (!isValid) {
+        Serial.print("[CMD] ❌ Unknown command: ");
+        Serial.println(command);
         server.send(400, "application/json", "{\"error\":\"Unknown command\"}");
         return;
     }
 
+    // Log the command
+    state.commandCount++;
+    Serial.println("\n╔════════════════════════════════════════╗");
+    Serial.print("║ [CMD #");
+    Serial.print(state.commandCount);
+    Serial.println("] Command received");
+    Serial.print("║ Command: ");
+    Serial.println(command);
+
+    // Log parameters if provided
+    if (doc.containsKey("frequency")) {
+        Serial.print("║ Frequency: ");
+        Serial.print(doc["frequency"].as<float>());
+        Serial.println(" Hz");
+    }
+    if (doc.containsKey("speed")) {
+        Serial.print("║ Speed: ");
+        Serial.print(doc["speed"].as<int>());
+        Serial.println(" %");
+    }
+    if (doc.containsKey("preset")) {
+        Serial.print("║ Preset: ");
+        Serial.println(doc["preset"].as<String>());
+    }
+    if (doc.containsKey("command_data")) {
+        Serial.print("║ Data: ");
+        Serial.println(doc["command_data"].as<String>());
+    }
+
+    Serial.print("║ Timestamp: ");
+    Serial.print(millis());
+    Serial.println(" ms");
+    Serial.println("╚════════════════════════════════════════╝\n");
+
     // TODO: Phase 2 - Envoyer à l'OpenRB via UART
     // Pour l'instant, juste logger
-    state.commandCount++;
-    Serial.print("[LOG] Command #");
-    Serial.print(state.commandCount);
-    Serial.print(": ");
-    Serial.println(command);
 
     // Répondre avec succès
     StaticJsonDocument<256> response;
@@ -155,7 +195,7 @@ void handleCommand() {
     serializeJson(response, responseStr);
     server.send(200, "application/json", responseStr);
 
-    Serial.println("[REST] Command response sent");
+    Serial.println("[REST] ✅ Response sent");
 }
 
 // ===== Gestion des requêtes non trouvées =====

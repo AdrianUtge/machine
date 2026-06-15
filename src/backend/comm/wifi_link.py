@@ -95,13 +95,13 @@ class WiFiLink:
         logger.info(f"Disconnected from ESP8266")
         return True
 
-    def send_command(self, command: str, *args) -> bool:
+    def send_command(self, command: str, **kwargs) -> bool:
         """
         Send a command to ESP8266.
 
         Args:
-            command: Command name (e.g., 'HIGH', 'LOW', 'STATUS')
-            *args: Additional arguments (ignored for now)
+            command: Command name (e.g., 'START', 'STOP', 'HOME')
+            **kwargs: Additional parameters (frequency, speed, preset, etc.)
 
         Returns:
             True if command was sent successfully
@@ -111,7 +111,16 @@ class WiFiLink:
             return False
 
         try:
-            payload = {"command": command}
+            payload = {"command": command.upper()}
+
+            # Add parameters if provided
+            if kwargs:
+                for key, value in kwargs.items():
+                    payload[key] = value
+
+            print(f"[WiFiLink] Sending command: {payload}")
+            logger.debug(f"Sending command: {payload}")
+
             response = requests.post(
                 f"{self.base_url}/api/command",
                 headers=self.headers,
@@ -119,13 +128,19 @@ class WiFiLink:
                 timeout=self.timeout
             )
 
+            print(f"[WiFiLink] Response: {response.status_code}")
+
             if response.status_code == 200:
+                print(f"[WiFiLink] ✅ Command '{command}' sent successfully")
                 logger.debug(f"Command '{command}' sent successfully")
                 return True
             else:
+                print(f"[WiFiLink] ❌ ESP8266 returned status {response.status_code}")
                 logger.error(f"ESP8266 returned status {response.status_code}")
                 return False
+
         except Exception as e:
+            print(f"[WiFiLink] ❌ Failed to send command: {e}")
             logger.error(f"Failed to send command: {e}")
             return False
 
@@ -151,6 +166,46 @@ class WiFiLink:
             logger.error(f"Failed to get status: {e}")
             return None
 
+    def send_line(self, command_str: str) -> bool:
+        """
+        Send command line to ESP8266 (compatibility with SerialLink).
+
+        Parses protocol commands and converts to WiFi API calls.
+        Examples:
+        - "M1000" → {"command": "START", "speed": 1000}
+        - "M0" → {"command": "STOP"}
+        - "H100" → {"command": "HOME"}
+        - "F50" → {"command": "FREQUENCY", "frequency": 50}
+        - "V75" → {"command": "SPEED", "speed": 75}
+        """
+        command_str = command_str.strip().upper()
+
+        print(f"[WiFiLink] Parsing: {command_str}")
+
+        if not command_str:
+            return False
+
+        # Simple protocol parsing for Phase 1
+        cmd_char = command_str[0] if command_str else ''
+        cmd_param = command_str[1:] if len(command_str) > 1 else ''
+
+        # Map protocol commands to REST commands
+        command_map = {
+            'H': ('HOME', {}),
+            'S': ('START', {}),
+            'M': ('STOP', {}),
+            'R': ('HARD_RESET', {}),
+            'F': ('FREQUENCY', {'frequency': float(cmd_param) if cmd_param else 0}),
+            'V': ('SPEED', {'speed': int(cmd_param) if cmd_param else 0}),
+        }
+
+        if cmd_char in command_map:
+            rest_cmd, params = command_map[cmd_char]
+            return self.send_command(rest_cmd, **params)
+
+        print(f"[WiFiLink] Unknown protocol command: {command_str}")
+        return False
+
     def write(self, data: str) -> bool:
         """
         Send raw command string to ESP8266.
@@ -159,7 +214,7 @@ class WiFiLink:
         Args:
             data: Command string
         """
-        return self.send_command(data.strip())
+        return self.send_line(data)
 
     def readline(self, timeout: Optional[float] = None) -> Optional[str]:
         """
@@ -180,3 +235,11 @@ class WiFiLink:
     def is_open(self) -> bool:
         """Check if connection is open."""
         return self.connected
+
+    def open(self) -> bool:
+        """Open/connect to ESP8266 (called by MachineController)."""
+        return self.connect()
+
+    def close(self) -> bool:
+        """Close connection to ESP8266."""
+        return self.disconnect()
