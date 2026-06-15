@@ -225,6 +225,7 @@ export default function App() {
                     isConnected={isConnected}
                     selectedPreset={selectedPreset}
                     onPresetChange={handlePresetChange}
+                    onCommand={handleCommand}
                     machineState={machineState?.machine_status || 'DISCONNECTED'}
                     pendingCommands={{}}
                   />
