@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Arduino.h>
-
 #include "machine_state.h"
 
 // --- CommandDispatcher -----------------------------------------------------
@@ -16,11 +15,12 @@ public:
 private:
     void handleHome(Stream& out);
     void handleStart(Stream& out);
+    void handleStop(Stream& out);
     void handleHardReset(Stream& out);
     void handleSetSpeed(const String& value, Stream& out);
     void handleSetFreq(const String& value, Stream& out);
     void handleGetStatus(Stream& out);
-
+    void sendDone(const String& command, Stream& out) const;
     bool parseInt32(const String& text, int32_t& value) const;
     bool parseFloat32(const String& text, float& value) const;
 

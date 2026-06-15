@@ -1,0 +1,293 @@
+/**
+ * Banc de mesure de force — LoLin NodeMCU v3 (ESP8266)
+ * Rôle : cerveau (cf. docs/compilation_technique.md)
+ *
+ *  - Auto-test de liaison au boot (link_check : 5 ping-pong < 1 s)
+ *  - Reçoit le résumé PEAK de chaque tour depuis l'OpenRB-150
+ *  - Convertit en Newtons, compare à la target, décide UP/DN/HOLD
+ *  - Interface utilisateur par USB Serial (WebSocket à venir : le WiFi
+ *    est coupé pour fiabiliser SoftwareSerial — voir note en bas)
+ *
+ * Câblage (3.3 V des deux côtés, GND commun obligatoire) :
+ *  D5 (GPIO14) RX  ←  TX Serial3 OpenRB
+ *  D6 (GPIO12) TX  →  RX Serial3 OpenRB
+ *
+ * Commandes utilisateur (moniteur USB @ 115200) :
+ *  TARGET:<force_N>   consigne de force en Newtons (ex: TARGET:2.5)
+ *  START              démarre le stepper + l'asservissement
+ *  STOP               arrête tout
+ *  GETBURST           demande un burst décimé (debug, ~5.5 s de transfert)
+ *  STATUS             état courant
+ *
+ * Protocole liaison OpenRB (lignes \n) :
+ *  → PING / RUN / STOP / UP:<n> / DN:<n> / HOLD / GETBURST
+ *  ← PONG / PEAK:<moyTop32>,<deltaRecalage> / BURST:<...>
+ */
+
+#include <Arduino.h>
+#include <ESP8266WiFi.h>
+#include <SoftwareSerial.h>
+#include "link_check.h"
+
+// ============================================================
+//  Pins / liaison
+// ============================================================
+static const uint8_t  PIN_RX    = D5;    // GPIO14 ← TX OpenRB
+static const uint8_t  PIN_TX    = D6;    // GPIO12 → RX OpenRB
+static const uint8_t  PIN_LED   = D4;    // GPIO2 = LED module ESP-12 (active LOW)
+static const uint8_t  PIN_OUT   = D0;    // GPIO16 — sortie pilotee par HIGH/LOW console
+static const uint32_t LINK_BAUD = 4800;
+
+// Auto-test de la liaison au boot (5 ping-pong). false = demarre direct.
+static const bool DO_LINK_CHECK = false;
+
+// ============================================================
+//  Calibration force — A AJUSTER AVEC DES MASSES CONNUES
+//  force_N = (counts - CAL_OFFSET_COUNTS) / CAL_COUNTS_PER_N
+//  (chaine : load cell 1.47230 mV/V → 4x INA125P → RC 1 Hz → ADC 12 bits)
+// ============================================================
+static const float CAL_COUNTS_PER_N   = 819.0f;  // TODO calibrer
+static const float CAL_OFFSET_COUNTS  = 0.0f;    // TODO calibrer (zero a vide)
+
+// ============================================================
+//  Asservissement (doc §10)
+// ============================================================
+static const float DEADBAND_N     = 0.01f;   // ±10 mN
+static const float K_STEPS_PER_N  = 200.0f;  // gain proportionnel → pas Dynamixel
+static const int   MAX_STEPS_CMD  = 500;     // borne de securite par commande
+
+// ============================================================
+//  État
+// ============================================================
+SoftwareSerial openrb;
+
+static bool  running       = false;
+static float targetN       = 0.0f;
+static float lastForceN    = 0.0f;
+static uint32_t peaksReceived = 0;
+
+static char   linkBuf[64];
+static size_t linkLen = 0;
+static bool   burstStream = false;   // passage en mode flux pendant un BURST:
+
+static char   userBuf[32];
+static size_t userLen = 0;
+
+static bool          vexcPending = false;   // attente de l'ack VEXC_OK
+static unsigned long vexcSentAt  = 0;
+
+// ============================================================
+//  Décision UP/DN/HOLD (doc §10)
+// ============================================================
+static int stepsFromError(float errN) {
+    int steps = (int)(fabsf(errN) * K_STEPS_PER_N);
+    if (steps < 1) steps = 1;
+    if (steps > MAX_STEPS_CMD) steps = MAX_STEPS_CMD;
+    return steps;
+}
+
+static void controlOnPeak(float forceN) {
+    if (!running) return;
+    float error = targetN - forceN;
+    if (error > DEADBAND_N) {
+        // force trop faible → descendre la table (rapprocher)
+        int s = stepsFromError(error);
+        openrb.printf("DN:%d\n", s);
+        Serial.printf("[ctl] force %.3f N < target %.3f N → DN:%d\n", forceN, targetN, s);
+    } else if (error < -DEADBAND_N) {
+        // force trop forte → monter la table (éloigner)
+        int s = stepsFromError(-error);
+        openrb.printf("UP:%d\n", s);
+        Serial.printf("[ctl] force %.3f N > target %.3f N → UP:%d\n", forceN, targetN, s);
+    } else {
+        openrb.println("HOLD");
+        Serial.printf("[ctl] force %.3f N dans la cible → HOLD\n", forceN);
+    }
+}
+
+// ============================================================
+//  Lignes reçues de l'OpenRB
+// ============================================================
+static void handleLinkLine(const char* line) {
+    if (strncmp(line, "PEAK:", 5) == 0) {
+        char* end;
+        long counts = strtol(line + 5, &end, 10);
+        long recal  = (*end == ',') ? strtol(end + 1, nullptr, 10) : 0;
+        peaksReceived++;
+        lastForceN = ((float)counts - CAL_OFFSET_COUNTS) / CAL_COUNTS_PER_N;
+        Serial.printf("[peak #%lu] %ld counts → %.3f N (recalage %+ld steps)\n",
+                      (unsigned long)peaksReceived, counts, lastForceN, recal);
+        controlOnPeak(lastForceN);
+    } else if (strncmp(line, "VEXC_OK:", 8) == 0) {
+        vexcPending = false;
+        Serial.printf("[ack] OpenRB confirme Vexc = %s V\n", line + 8);
+    } else if (strcmp(line, "PONG") == 0) {
+        // heartbeat OK — silencieux
+    } else if (line[0] != '\0') {
+        Serial.printf("[RB] %s\n", line);
+    }
+}
+
+// ============================================================
+//  Commandes utilisateur (USB)
+// ============================================================
+static void handleUserLine(const char* line) {
+    if (strncmp(line, "TARGET:", 7) == 0) {
+        targetN = atof(line + 7);
+        Serial.printf("Target = %.3f N\n", targetN);
+    } else if (strcmp(line, "START") == 0) {
+        running = true;
+        openrb.println("RUN");
+        Serial.println("START — stepper RUN, asservissement actif");
+    } else if (strcmp(line, "STOP") == 0) {
+        running = false;
+        openrb.println("STOP");
+        Serial.println("STOP — stepper arrete");
+    } else if (strcmp(line, "GETBURST") == 0) {
+        openrb.println("GETBURST");
+        Serial.println("GETBURST demande (transfert ~5.5 s au prochain tour)");
+    } else if (strcmp(line, "STATUS") == 0) {
+        Serial.printf("running:%d target:%.3f N force:%.3f N peaks:%lu D0:%d\n",
+                      running, targetN, lastForceN, (unsigned long)peaksReceived,
+                      digitalRead(PIN_OUT));
+    } else if (strcasecmp(line, "HIGH") == 0) {
+        digitalWrite(PIN_OUT, HIGH);
+        Serial.println("D0 (GPIO16) → HIGH");
+    } else if (strcasecmp(line, "LOW") == 0) {
+        digitalWrite(PIN_OUT, LOW);
+        Serial.println("D0 (GPIO16) → LOW");
+    } else if ((line[0] == 'V' || line[0] == 'v') && isdigit((unsigned char)line[1])) {
+        // V<volts> : tension d'excitation du pont via DAC A0 OpenRB (ex: V2, V2.5)
+        float v = atof(line + 1);
+        if (v > 3.3f) {
+            Serial.printf("V%.2f impossible : DAC limite a 3.3 V → demande plafonnee\n", v);
+            v = 3.3f;
+        }
+        openrb.printf("VEXC:%.3f\n", v);
+        vexcPending = true;
+        vexcSentAt  = millis();
+        Serial.printf("Vexc → %.3f V demande, attente de confirmation...\n", v);
+    } else if (line[0] != '\0') {
+        Serial.println("Commandes : TARGET:<N> | START | STOP | GETBURST | STATUS | HIGH | LOW | V<volts>");
+    }
+}
+
+// ============================================================
+//  Setup
+// ============================================================
+void setup() {
+    Serial.begin(115200);
+    delay(100);
+    Serial.println("\n=== NodeMCU v3 (ESP8266) boot ===");
+
+    pinMode(PIN_LED, OUTPUT);
+    digitalWrite(PIN_LED, HIGH);
+
+    pinMode(PIN_OUT, OUTPUT);
+    digitalWrite(PIN_OUT, LOW);   // D0 demarre a LOW
+
+    // WiFi coupe : ses interruptions corrompent la reception SoftwareSerial
+    WiFi.mode(WIFI_OFF);
+    WiFi.forceSleepBegin();
+    delay(10);
+
+    openrb.begin(LINK_BAUD, SWSERIAL_8N1, PIN_RX, PIN_TX, false, 256);
+
+    if (DO_LINK_CHECK) {
+        if (!linkCheck(openrb)) {
+            Serial.println("\n!!! ERREUR: liaison OpenRB KO — verifier D5/D6/GND et que l'OpenRB tourne");
+            for (;;) {  // LED 10 Hz = erreur de liaison
+                digitalWrite(PIN_LED, LOW);  delay(100);
+                digitalWrite(PIN_LED, HIGH); delay(100);
+            }
+        }
+        Serial.println("Liaison OpenRB OK");
+    } else {
+        Serial.println("Link check OpenRB saute (DO_LINK_CHECK = false)");
+    }
+    Serial.println("Commandes : TARGET:<N> | START | STOP | GETBURST | STATUS");
+}
+
+// ============================================================
+//  Loop
+// ============================================================
+void loop() {
+    // --- Reception OpenRB (non bloquant) --------------------------
+    while (openrb.available()) {
+        char c = (char)openrb.read();
+
+        // Mode flux : un BURST: est en cours → recopie directe vers USB
+        if (burstStream) {
+            Serial.write(c);
+            if (c == '\n') burstStream = false;
+            continue;
+        }
+
+        if (c == '\n') {
+            linkBuf[linkLen] = '\0';
+            handleLinkLine(linkBuf);
+            linkLen = 0;
+        } else if (c == '\r') {
+            // ignore
+        } else if (linkLen < sizeof(linkBuf) - 1) {
+            linkBuf[linkLen++] = c;
+            if (linkLen == 6 && strncmp(linkBuf, "BURST:", 6) == 0) {
+                Serial.write(linkBuf, 6);   // bascule en mode flux
+                burstStream = true;
+                linkLen = 0;
+            }
+        } else {
+            linkLen = 0;  // ligne corrompue
+        }
+    }
+
+    // --- Commandes utilisateur USB (non bloquant) ------------------
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\n') {
+            userBuf[userLen] = '\0';
+            handleUserLine(userBuf);
+            userLen = 0;
+        } else if (c == '\r') {
+            // ignore
+        } else if (userLen < sizeof(userBuf) - 1) {
+            userBuf[userLen++] = c;
+        } else {
+            userLen = 0;
+        }
+    }
+
+    // --- Timeout de l'ack VEXC -------------------------------------
+    if (vexcPending && millis() - vexcSentAt >= 1000) {
+        vexcPending = false;
+        Serial.println("[!!] VEXC sans confirmation de l'OpenRB (timeout 1 s) — verifier la liaison");
+    }
+
+    // --- Heartbeat quand le banc est a l'arret ---------------------
+    static unsigned long lastPing = 0;
+    if (!running && millis() - lastPing >= 2000) {
+        lastPing = millis();
+        openrb.println("PING");
+    }
+
+    // --- LED : temoin d'activite (flash court par peak recu) -------
+    static uint32_t lastPeakSeen = 0;
+    static unsigned long ledOffAt = 0;
+    if (peaksReceived != lastPeakSeen) {
+        lastPeakSeen = peaksReceived;
+        digitalWrite(PIN_LED, LOW);
+        ledOffAt = millis() + 30;
+    }
+    if (ledOffAt && millis() >= ledOffAt) {
+        digitalWrite(PIN_LED, HIGH);
+        ledOffAt = 0;
+    }
+}
+
+/*
+ * Note WebSocket (doc §11) : non implemente volontairement. Le WiFi actif
+ * degrade la reception SoftwareSerial (interruptions prioritaires). Pour
+ * ajouter le WebSocket il faudra soit passer la liaison OpenRB sur l'UART
+ * materiel (Serial.swap : RX=D7/GPIO13, TX=D8/GPIO15, en sacrifiant le
+ * moniteur USB), soit accepter quelques pertes de trames et les gerer.
+ */

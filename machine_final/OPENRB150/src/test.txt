@@ -1,0 +1,365 @@
+/**
+ * Banc de mesure de force — OpenRB-150 (SAMD21G18A)
+ *
+ * UARTs :
+ *  Serial  → USB natif (debug / monitor)
+ *  Serial1 → bus Dynamixel (géré par Dynamixel2Arduino)
+ *  Serial3 → TX/RX physiques ↔ NodeMCU v3
+ *
+ * Protocole série (Serial3 ↔ NodeMCU) :
+ *  TX  → "BURST:<v0>,<v1>,...,<vN>\n"
+ *  RX  ← "UP:<steps>\n" | "DN:<steps>\n" | "HOLD\n"
+ *
+ * Câblage DM542T (mode anode commune) :
+ *  5V  ──┬── PUL+  ├── DIR+  └── ENA+
+ *  Pin 6 ─── PUL-   (signal dynamique)
+ *  Pin 7 ─── DIR-   (fixe : sens)
+ *  Pin 8 ─── ENA-   (fixe : enable)
+ *  GND ──── GND commun
+ */
+
+#include <Arduino.h>
+#include <Dynamixel2Arduino.h>
+
+// ============================================================
+//  Debug — ping/pong série toutes les 2 secondes
+//  Mettre à true pour tester la liaison Serial3 ↔ NodeMCU
+//  Désactiver (false) en production
+// ============================================================
+static const bool DEBUG_PING_PONG = true;
+
+// ============================================================
+//  Debug — miroir Serial3 → USB
+//  Tout ce qui arrive sur Serial3 est affiché sur le monitor USB
+// ============================================================
+static const bool DEBUG_SERIAL_MIRROR = true;
+
+// ============================================================
+//  Macro LOG — Serial.println non-bloquant sur SAMD21
+//  Sur SAMD21, Serial.print() bloque si le buffer USB est plein
+//  (ex. monitor déconnecté). Le guard if(Serial) évite le freeze.
+// ============================================================
+#define LOG(msg) do { if (Serial) Serial.println(msg); } while(0)
+
+// ============================================================
+//  Pins
+// ============================================================
+#define PUL_PIN   6
+#define DIR_PIN   7
+#define ENA_PIN   8
+#define ADC_PIN   A0
+
+// ============================================================
+//  Paramètres moteur
+// ============================================================
+static const float F_ROTATION    = 10.0f;
+static const int   STEPS_PER_REV = 3200;
+static const float F_PULSE       = F_ROTATION * STEPS_PER_REV;  // 32 000 Hz
+
+// ============================================================
+//  Paramètres burst ADC
+// ============================================================
+static const int   BURST_SIZE  = 8192;
+static const float SAMPLE_RATE = 87000.0f;  // Hz (freerun + avg ×4, prescaler /32)
+
+// ============================================================
+//  Trigger anticipé — centrage du burst sur le point bas
+//  OFFSET_STEPS ≈ 1507  →  TRIGGER_STEP ≈ 1693
+// ============================================================
+static const int OFFSET_STEPS = (int)(F_PULSE * (BURST_SIZE / (2.0f * SAMPLE_RATE)));
+static const int TRIGGER_STEP = STEPS_PER_REV - OFFSET_STEPS;
+
+// ============================================================
+//  Buffers
+// ============================================================
+volatile uint16_t burstBuffer[BURST_SIZE] __attribute__((aligned(4)));
+volatile bool     burstReady = false;
+volatile bool     burstArmed = false;
+
+// ============================================================
+//  État stepper
+// ============================================================
+volatile int  stepCount = 0;
+volatile bool pulState  = false;
+
+// ============================================================
+//  Descripteurs DMA — alignés sur 16 octets (contrainte SAMD21)
+// ============================================================
+typedef struct {
+    uint16_t btctrl;
+    uint16_t btcnt;
+    uint32_t srcaddr;
+    uint32_t dstaddr;
+    uint32_t descaddr;
+} DmacDescriptor_t;
+
+__attribute__((aligned(16))) static DmacDescriptor_t dmacDescriptors[1];
+__attribute__((aligned(16))) static DmacDescriptor_t dmacWriteback[1];
+
+// ============================================================
+//  Dynamixel — Serial1, DIR pin = 74
+// ============================================================
+#define DXL_SERIAL   Serial1
+#define DXL_DIR_PIN  74
+Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
+
+static const uint8_t  DXL_ID        = 1;
+static const uint32_t DXL_STEP_SIZE = 1;
+static       int32_t  dxlPosition   = 2048;
+static const int32_t  DXL_POS_MIN   = 0;
+static const int32_t  DXL_POS_MAX   = 4095;
+
+// ===========================================================================
+//  ADC freerun
+// ===========================================================================
+void setupADC() {
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN |
+                        GCLK_CLKCTRL_GEN_GCLK0 |
+                        GCLK_CLKCTRL_ID_ADC;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    ADC->CTRLA.bit.ENABLE = 0;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->CTRLA.bit.SWRST = 1;
+    while (ADC->CTRLA.bit.SWRST);
+
+    ADC->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC1;
+
+    ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV32 |
+                     ADC_CTRLB_RESSEL_12BIT     |
+                     ADC_CTRLB_FREERUN;
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    ADC->INPUTCTRL.reg = ADC_INPUTCTRL_MUXNEG_GND |
+                         ADC_INPUTCTRL_MUXPOS_PIN0 |
+                         ADC_INPUTCTRL_GAIN_DIV2;
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 |
+                       ADC_AVGCTRL_ADJRES(2);
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(4);
+    while (ADC->STATUS.bit.SYNCBUSY);
+    // NE PAS activer ici — activé dans startBurst()
+}
+
+// ===========================================================================
+//  DMA — canal 0, trigger = ADC RESRDY
+// ===========================================================================
+void setupDMA() {
+    PM->AHBMASK.bit.DMAC_  = 1;
+    PM->APBBMASK.bit.DMAC_ = 1;
+
+    DMAC->CTRL.bit.DMAENABLE = 0;
+    DMAC->CTRL.bit.SWRST     = 1;
+
+    DMAC->BASEADDR.reg = (uint32_t)dmacDescriptors;
+    DMAC->WRBADDR.reg  = (uint32_t)dmacWriteback;
+    DMAC->CTRL.reg     = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);
+
+    DMAC->CHID.reg    = 0;
+    DMAC->CHCTRLB.reg = DMAC_CHCTRLB_TRIGSRC(ADC_DMAC_ID_RESRDY) |
+                        DMAC_CHCTRLB_TRIGACT_BEAT                 |
+                        DMAC_CHCTRLB_LVL(0);
+    DMAC->CHINTENSET.reg = DMAC_CHINTENSET_TCMPL;
+
+    NVIC_EnableIRQ(DMAC_IRQn);
+    NVIC_SetPriority(DMAC_IRQn, 1);
+}
+
+void armDMABurst() {
+    DMAC->CHID.reg           = 0;
+    DMAC->CHCTRLA.bit.ENABLE = 0;
+
+    dmacDescriptors[0].btctrl   = DMAC_BTCTRL_VALID          |
+                                   DMAC_BTCTRL_BEATSIZE_HWORD |
+                                   DMAC_BTCTRL_DSTINC         |
+                                   DMAC_BTCTRL_BLOCKACT_INT;
+    dmacDescriptors[0].btcnt    = BURST_SIZE;
+    dmacDescriptors[0].srcaddr  = (uint32_t)&ADC->RESULT.reg;
+    dmacDescriptors[0].dstaddr  = (uint32_t)burstBuffer + BURST_SIZE * sizeof(uint16_t);
+    dmacDescriptors[0].descaddr = 0;
+
+    DMAC->CHID.reg           = 0;
+    DMAC->CHCTRLA.bit.ENABLE = 1;
+}
+
+// ===========================================================================
+//  ISR DMA
+// ===========================================================================
+void DMAC_Handler() {
+    DMAC->CHID.reg = 0;
+    if (DMAC->CHINTFLAG.bit.TCMPL) {
+        DMAC->CHINTFLAG.bit.TCMPL = 1;
+        ADC->CTRLA.bit.ENABLE = 0;
+        while (ADC->STATUS.bit.SYNCBUSY);
+        burstReady = true;
+        burstArmed = false;
+    }
+}
+
+void startBurst() {
+    burstReady = false;
+    burstArmed = true;
+    armDMABurst();
+    ADC->CTRLA.bit.ENABLE = 1;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->SWTRIG.bit.START = 1;
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ===========================================================================
+//  ISR Timer TC3 — pulse stepper + compteur position (priorité 0)
+// ===========================================================================
+void TC3_Handler() {
+    if (TC3->COUNT16.INTFLAG.bit.MC0) {
+        TC3->COUNT16.INTFLAG.bit.MC0 = 1;
+        pulState = !pulState;
+        digitalWrite(PUL_PIN, pulState);
+        if (pulState) {
+            stepCount++;
+            if (stepCount >= STEPS_PER_REV) stepCount = 0;
+            if (stepCount == TRIGGER_STEP && !burstArmed && !burstReady)
+                startBurst();
+        }
+    }
+}
+
+void setupTimer(float pulseFreq) {
+    float timerFreq = pulseFreq * 2.0f;
+
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN |
+                        GCLK_CLKCTRL_GEN_GCLK0 |
+                        GCLK_CLKCTRL_ID_TCC2_TC3;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    TC3->COUNT16.CTRLA.reg = TC_CTRLA_SWRST;
+    while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+    while (TC3->COUNT16.CTRLA.bit.SWRST);
+
+    TC3->COUNT16.CTRLA.reg = TC_CTRLA_MODE_COUNT16   |
+                             TC_CTRLA_PRESCALER_DIV64 |
+                             TC_CTRLA_WAVEGEN_MFRQ;
+
+    TC3->COUNT16.CC[0].reg = (uint16_t)(750000.0f / timerFreq) - 1;
+    while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+
+    TC3->COUNT16.INTENSET.reg = TC_INTENSET_MC0;
+    NVIC_EnableIRQ(TC3_IRQn);
+    NVIC_SetPriority(TC3_IRQn, 0);
+
+    TC3->COUNT16.CTRLA.bit.ENABLE = 1;
+    while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+}
+
+// ===========================================================================
+//  Recalage des pas perdus via argmax du burst
+// ===========================================================================
+void recalibrateStepcountFromBurst() {
+    int iMax = 0;
+    for (int i = 1; i < BURST_SIZE; i++)
+        if (burstBuffer[i] > burstBuffer[iMax]) iMax = i;
+    int dSteps = (int)((iMax - BURST_SIZE / 2) * (F_PULSE / SAMPLE_RATE));
+    stepCount  = (stepCount + dSteps + STEPS_PER_REV) % STEPS_PER_REV;
+}
+
+// ===========================================================================
+//  Commandes Dynamixel — init lazy au premier mouvement
+// ===========================================================================
+void moveDynamixel(int32_t deltaSteps) {
+    static bool dxlReady = false;
+    if (!dxlReady) {
+        dxl.torqueOff(DXL_ID);
+        dxl.setOperatingMode(DXL_ID, OP_POSITION);
+        dxl.torqueOn(DXL_ID);
+        dxlReady = true;
+        LOG("[DXL] servo configure");
+    }
+    dxlPosition = constrain(dxlPosition + deltaSteps, DXL_POS_MIN, DXL_POS_MAX);
+    dxl.setGoalPosition(DXL_ID, dxlPosition);
+}
+
+void parseCommand(const String& cmd) {
+    if (cmd.startsWith("UP:"))
+        moveDynamixel(+(int32_t)(cmd.substring(3).toInt() * DXL_STEP_SIZE));
+    else if (cmd.startsWith("DN:"))
+        moveDynamixel(-(int32_t)(cmd.substring(3).toInt() * DXL_STEP_SIZE));
+    // HOLD → ne rien faire
+}
+
+// ===========================================================================
+//  Setup
+// ===========================================================================
+void setup() {
+    pinMode(PUL_PIN, OUTPUT);
+    pinMode(DIR_PIN, OUTPUT);
+    pinMode(ENA_PIN, OUTPUT);
+    digitalWrite(PUL_PIN, LOW);
+    digitalWrite(DIR_PIN, LOW);
+    digitalWrite(ENA_PIN, LOW);
+
+    // USB Serial — SAMD21 natif, timeout 3 s si pas de monitor
+    Serial.begin(115200);
+    { unsigned long t0 = millis(); while (!Serial && millis() - t0 < 3000); }
+
+    LOG("=== OpenRB-150 boot ===");
+    LOG("Etape 1 : Serial USB OK");
+
+    Serial3.begin(9600);
+    LOG("Etape 2 : Serial3 OK");
+
+    analogReadResolution(12);
+    LOG("Etape 3 : ADC resolution OK");
+
+    dxl.begin(57600);
+    dxl.setPortProtocolVersion(2.0);
+    LOG("Etape 4 : Dynamixel bus init OK");
+
+    setupADC();
+    setupDMA();
+    setupTimer(F_PULSE);
+
+    LOG("READY");
+    Serial3.println("READY");
+}
+
+// ===========================================================================
+//  Loop
+// ===========================================================================
+void loop() {
+    // --- Burst disponible ---------------------------------------------------
+    if (burstReady) {
+        recalibrateStepcountFromBurst();
+        burstReady = false;
+        Serial3.print("BURST:");
+        for (int i = 0; i < BURST_SIZE; i++) {
+            Serial3.print(burstBuffer[i]);
+            if (i < BURST_SIZE - 1) Serial3.print(',');
+        }
+        Serial3.println();
+    }
+
+    // --- Réception depuis le NodeMCU (Serial3) ------------------------------
+    if (Serial3.available()) {
+        String cmd = Serial3.readStringUntil('\n');
+        cmd.trim();
+        if (DEBUG_SERIAL_MIRROR) LOG("[S3 RX] " + cmd);
+        if (DEBUG_PING_PONG) {
+            LOG("[DBG RX] " + cmd);
+            if (cmd == "PONG") LOG("[DBG] liaison OK");
+        } else {
+            parseCommand(cmd);
+        }
+    }
+
+    // --- Ping/pong debug ----------------------------------------------------
+    if (DEBUG_PING_PONG) {
+        static unsigned long lastPing = 0;
+        if (millis() - lastPing >= 2000) {
+            lastPing = millis();
+            Serial3.println("PING");
+            LOG("[DBG TX] PING");
+        }
+    }
+}

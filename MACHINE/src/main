@@ -27,6 +27,7 @@ constexpr float DXL_PROTOCOL_VERSION = 2.0;
 constexpr uint32_t DXL_BAUDRATE = 57600;
 
 #define DXL_SERIAL Serial1
+#define COM_SERIAL Serial3
 #define DEBUG_SERIAL Serial
 
 constexpr int DXL_DIR_PIN = -1;

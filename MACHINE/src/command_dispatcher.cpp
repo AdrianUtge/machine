@@ -62,6 +62,18 @@ void CommandDispatcher::dispatch(const String& line, Stream& out)
         return;
     }
 
+    if (command == "STOP")
+    {
+        if (argument.length() > 0)
+        {
+            sendError("STOP_TAKES_NO_ARGUMENT", out);
+            return;
+        }
+
+        handleStop(out);
+        return;
+    }
+
     if (command == "HARD_RESET")
     {
         if (argument.length() > 0)
@@ -115,10 +127,24 @@ void CommandDispatcher::dispatch(const String& line, Stream& out)
 
 // --- Handlers --------------------------------------------------------------
 
+void CommandDispatcher::sendDone(const String& command, Stream& out) const
+{
+    out.print("DONE:");
+    out.println(command);
+}
+
 void CommandDispatcher::handleHome(Stream& out)
 {
     _machineState.home();
+
+    if (_machineState.getMode() == MachineMode::ERROR)
+    {
+        sendError("HOME_FAILED", out);
+        return;
+    }
+
     sendAck("HOME", out);
+    sendDone("HOME", out);
 }
 
 void CommandDispatcher::handleStart(Stream& out)
@@ -131,6 +157,12 @@ void CommandDispatcher::handleStart(Stream& out)
 
     _machineState.start();
     sendAck("START", out);
+}
+
+void CommandDispatcher::handleStop(Stream& out)
+{
+    _machineState.stop();
+    sendAck("STOP", out);
 }
 
 void CommandDispatcher::handleHardReset(Stream& out)

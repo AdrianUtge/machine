@@ -1,0 +1,408 @@
+/**
+ * Banc de mesure de force — OpenRB-150 (SAMD21G18A)
+ * Rôle : exécutant (cf. docs/compilation_technique.md)
+ *
+ *  - Timer TC3 → pulses stepper DM542T + compteur de position
+ *  - ADC freerun + DMA → burst centré sur le point bas (§7)
+ *  - Recalage des pas perdus par argmax du burst (§13)
+ *  - Résumé PEAK envoyé à l'ESP8266 : le burst brut (≈41 Ko CSV) ne passe
+ *    pas @ 4800 bauds (~85 s/burst), donc on n'envoie que la synthèse.
+ *  - Exécute UP/DN/HOLD (Dynamixel) et RUN/STOP (stepper)
+ *
+ * UARTs :
+ *  Serial  → USB natif (debug / monitor) @ 115200
+ *  Serial1 → bus Dynamixel (Dynamixel2Arduino)
+ *  Serial3 → broches RX/TX ↔ NodeMCU ESP8266 (D6→RX, TX→D5) @ 4800
+ *
+ * Protocole Serial3 (lignes \n) :
+ *  ← PING                  → PONG
+ *  ← RUN | STOP            stepper marche/arrêt
+ *  ← UP:<n> | DN:<n> | HOLD  table Dynamixel
+ *  ← VEXC:<volts>          tension d'excitation du pont (DAC A0, 0–3.3 V)
+ *  ← GETBURST              → BURST:<v1>,<v16>,... (décimé ×16, debug)
+ *  → PEAK:<moyTop32>,<deltaRecalage>   une fois par tour
+ *
+ * Câblage DM542T (anode commune, actif bas) :
+ *  5V ──┬─ PUL+ ├─ DIR+ └─ ENA+
+ *  Pin 6 ─ PUL-   Pin 7 ─ DIR-   Pin 8 ─ ENA-   GND commun
+ */
+
+#include <Arduino.h>
+#include <Dynamixel2Arduino.h>
+
+// ============================================================
+//  Pins
+// ============================================================
+#define PUL_PIN  6
+#define DIR_PIN  7
+#define ENA_PIN  8
+#define ADC_PIN  A1   // PB02 = AIN10 — entree mesure force (INA125P)
+#define DAC_PIN  A0   // PA02 = DAC 10 bits — tension d'excitation du pont
+                      // ! sortie faible : mettre un suiveur (AOP) vers le pont
+
+// ============================================================
+//  Paramètres moteur / burst (cf. doc §4-§8)
+// ============================================================
+static const float F_ROTATION    = 1.0f;   // Hz — vitesse de test (max spec : 10)
+static const int   STEPS_PER_REV = 3200;   // config DIP DM542T (µstep 1/16)
+static const float F_PULSE       = F_ROTATION * STEPS_PER_REV;
+
+static const int   BURST_SIZE    = 8192;
+static const float SAMPLE_RATE   = 87000.0f;  // freerun 12 bits, avg ×4
+static const int   TOP_X         = 32;        // nb de max moyennés pour PEAK
+static const int   BURST_DECIM   = 16;        // décimation du GETBURST debug
+
+// Trigger anticipé pour centrer le burst sur le point bas (§7)
+static const int OFFSET_STEPS = (int)(F_PULSE * (BURST_SIZE / (2.0f * SAMPLE_RATE)));
+static const int TRIGGER_STEP = STEPS_PER_REV - OFFSET_STEPS;
+
+// ============================================================
+//  Liaison ESP8266
+// ============================================================
+static const uint32_t LINK_BAUD = 4800;
+
+// ============================================================
+//  Dynamixel
+// ============================================================
+#define DXL_SERIAL   Serial1
+#define DXL_DIR_PIN  74
+#define DXL_ID       1
+#define DXL_PROTOCOL 2.0
+
+Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
+using namespace ControlTableItem;
+
+// ============================================================
+//  État partagé ISR <-> loop
+// ============================================================
+volatile uint16_t burstBuffer[BURST_SIZE] __attribute__((aligned(4)));
+volatile bool     burstReady = false;
+volatile bool     burstArmed = false;
+volatile int      stepCount  = 0;
+volatile bool     pulState   = false;
+volatile bool     running    = false;   // RUN/STOP du stepper
+
+static volatile int32_t pendingSteps = 0;  // >0 = UP, <0 = DN (Dynamixel)
+static bool burstDumpRequested = false;    // GETBURST
+
+// ============================================================
+//  Descripteurs DMA (alignés 16 octets — contrainte DMAC SAMD21)
+// ============================================================
+typedef struct {
+    uint16_t btctrl;
+    uint16_t btcnt;
+    uint32_t srcaddr;
+    uint32_t dstaddr;
+    uint32_t descaddr;
+} DmacDescriptor_t;
+
+__attribute__((aligned(16))) static DmacDescriptor_t dmacDescriptors[1];
+__attribute__((aligned(16))) static DmacDescriptor_t dmacWriteback[1];
+
+#define LOG(msg) do { if (Serial) Serial.println(msg); } while (0)
+
+// ============================================================
+//  ADC freerun (§6)
+// ============================================================
+static void setupADC() {
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_ID_ADC;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    ADC->CTRLA.bit.ENABLE = 0;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->CTRLA.bit.SWRST = 1;
+    while (ADC->CTRLA.bit.SWRST);
+
+    ADC->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC1;
+    ADC->CTRLB.reg   = ADC_CTRLB_PRESCALER_DIV32 | ADC_CTRLB_RESSEL_12BIT | ADC_CTRLB_FREERUN;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->INPUTCTRL.reg = ADC_INPUTCTRL_MUXNEG_GND | ADC_INPUTCTRL_MUXPOS_PIN10  // A1 = PB02 = AIN10
+                       | ADC_INPUTCTRL_GAIN_DIV2;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 | ADC_AVGCTRL_ADJRES(2);
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(4);
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ============================================================
+//  DMA — canal 0, trigger ADC RESRDY (§6)
+// ============================================================
+static void setupDMA() {
+    PM->AHBMASK.bit.DMAC_  = 1;
+    PM->APBBMASK.bit.DMAC_ = 1;
+
+    DMAC->CTRL.bit.DMAENABLE = 0;
+    DMAC->CTRL.bit.SWRST     = 1;
+    DMAC->BASEADDR.reg = (uint32_t)dmacDescriptors;
+    DMAC->WRBADDR.reg  = (uint32_t)dmacWriteback;
+    DMAC->CTRL.reg     = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);
+
+    DMAC->CHID.reg    = 0;
+    DMAC->CHCTRLB.reg = DMAC_CHCTRLB_TRIGSRC(ADC_DMAC_ID_RESRDY)
+                      | DMAC_CHCTRLB_TRIGACT_BEAT
+                      | DMAC_CHCTRLB_LVL(0);
+    DMAC->CHINTENSET.reg = DMAC_CHINTENSET_TCMPL;
+    NVIC_EnableIRQ(DMAC_IRQn);
+    NVIC_SetPriority(DMAC_IRQn, 1);   // ADC tolère quelques µs de latence
+}
+
+static void armDMABurst() {
+    DMAC->CHID.reg           = 0;
+    DMAC->CHCTRLA.bit.ENABLE = 0;
+
+    dmacDescriptors[0].btctrl   = DMAC_BTCTRL_VALID | DMAC_BTCTRL_BEATSIZE_HWORD
+                                | DMAC_BTCTRL_DSTINC | DMAC_BTCTRL_BLOCKACT_INT;
+    dmacDescriptors[0].btcnt    = BURST_SIZE;
+    dmacDescriptors[0].srcaddr  = (uint32_t)&ADC->RESULT.reg;
+    // convention SAMD21 : adresse de FIN de buffer (post-incrément)
+    dmacDescriptors[0].dstaddr  = (uint32_t)burstBuffer + BURST_SIZE * sizeof(uint16_t);
+    dmacDescriptors[0].descaddr = 0;
+
+    DMAC->CHID.reg           = 0;
+    DMAC->CHCTRLA.bit.ENABLE = 1;
+}
+
+void DMAC_Handler() {
+    DMAC->CHID.reg = 0;
+    if (DMAC->CHINTFLAG.bit.TCMPL) {
+        DMAC->CHINTFLAG.bit.TCMPL = 1;
+        ADC->CTRLA.bit.ENABLE = 0;
+        while (ADC->STATUS.bit.SYNCBUSY);
+        burstReady = true;
+        burstArmed = false;
+    }
+}
+
+static void startBurst() {
+    burstReady = false;
+    burstArmed = true;
+    armDMABurst();
+    ADC->CTRLA.bit.ENABLE = 1;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->SWTRIG.bit.START = 1;
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ============================================================
+//  Timer TC3 — pulses stepper + compteur de position (§5)
+// ============================================================
+void TC3_Handler() {
+    if (TC3->COUNT16.INTFLAG.bit.MC0) {
+        TC3->COUNT16.INTFLAG.bit.MC0 = 1;
+        if (!running) return;          // STOP : pas de pulses, position figée
+
+        pulState = !pulState;
+        digitalWrite(PUL_PIN, pulState);
+        if (pulState) {                // front montant = 1 step complet
+            stepCount++;
+            if (stepCount >= STEPS_PER_REV) stepCount = 0;
+            if (stepCount == TRIGGER_STEP && !burstArmed && !burstReady) {
+                startBurst();
+            }
+        }
+    }
+}
+
+static void setupTimer(float pulseFreq) {
+    float timerFreq = pulseFreq * 2.0f;  // toggle à chaque IT → 2 IT = 1 step
+
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN | GCLK_CLKCTRL_GEN_GCLK0 | GCLK_CLKCTRL_ID_TCC2_TC3;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    TC3->COUNT16.CTRLA.reg = TC_CTRLA_SWRST;
+    while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+    TC3->COUNT16.CTRLA.reg = TC_CTRLA_MODE_COUNT16 | TC_CTRLA_PRESCALER_DIV64
+                           | TC_CTRLA_WAVEGEN_MFRQ;
+    TC3->COUNT16.CC[0].reg = (uint16_t)(750000.0f / timerFreq) - 1;
+    while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+    TC3->COUNT16.INTENSET.reg = TC_INTENSET_MC0;
+    NVIC_EnableIRQ(TC3_IRQn);
+    NVIC_SetPriority(TC3_IRQn, 0);     // priorité max : jitter = vibrations moteur
+    TC3->COUNT16.CTRLA.bit.ENABLE = 1;
+    while (TC3->COUNT16.STATUS.bit.SYNCBUSY);
+}
+
+// ============================================================
+//  Analyse du burst : argmax (recalage §13) + moyenne des TOP_X max
+// ============================================================
+static void analyzeBurst(uint32_t* topMean, int32_t* recalDelta) {
+    uint16_t top[TOP_X] = {0};   // trié décroissant
+    int iMax = 0;
+
+    for (int i = 0; i < BURST_SIZE; i++) {
+        uint16_t v = burstBuffer[i];
+        if (v > burstBuffer[iMax]) iMax = i;
+        if (v > top[TOP_X - 1]) {
+            int j = TOP_X - 1;
+            while (j > 0 && top[j - 1] < v) { top[j] = top[j - 1]; j--; }
+            top[j] = v;
+        }
+    }
+
+    uint32_t sum = 0;
+    for (int i = 0; i < TOP_X; i++) sum += top[i];
+    *topMean = sum / TOP_X;
+
+    // Recalage : le pic devrait être au centre du burst
+    int delta = iMax - (BURST_SIZE / 2);
+    int deltaSteps = (int)(delta * (F_PULSE / SAMPLE_RATE));
+    *recalDelta = deltaSteps;
+
+    noInterrupts();
+    int sc = stepCount + deltaSteps;
+    sc %= STEPS_PER_REV;
+    if (sc < 0) sc += STEPS_PER_REV;
+    stepCount = sc;
+    interrupts();
+}
+
+// ============================================================
+//  Dynamixel — déplacement table (lazy init)
+// ============================================================
+static void moveDynamixel(int32_t deltaSteps) {
+    static bool dxlReady = false;
+    if (!dxlReady) {
+        dxl.begin(57600);
+        dxl.setPortProtocolVersion(DXL_PROTOCOL);
+        dxl.torqueOff(DXL_ID);
+        dxl.setOperatingMode(DXL_ID, OP_POSITION);
+        dxl.torqueOn(DXL_ID);
+        dxlReady = true;
+    }
+    float curPos = dxl.getPresentPosition(DXL_ID, UNIT_DEGREE);
+    float deg    = (float)deltaSteps / STEPS_PER_REV * 360.0f;
+    dxl.setGoalPosition(DXL_ID, curPos + deg, UNIT_DEGREE);
+}
+
+// ============================================================
+//  Envoi burst décimé (GETBURST — debug uniquement)
+//  512 valeurs ≈ 2.6 Ko ≈ 5.5 s @ 4800 bauds
+// ============================================================
+static void sendBurstDecimated() {
+    Serial3.print("BURST:");
+    for (int i = 0; i < BURST_SIZE; i += BURST_DECIM) {
+        Serial3.print(burstBuffer[i]);
+        if (i + BURST_DECIM < BURST_SIZE) Serial3.print(',');
+    }
+    Serial3.println();
+}
+
+// ============================================================
+//  Commandes reçues de l'ESP8266
+// ============================================================
+static void handleCommand(const char* cmd) {
+    if (strcmp(cmd, "PING") == 0) {
+        Serial3.println("PONG");
+    } else if (strcmp(cmd, "RUN") == 0) {
+        digitalWrite(ENA_PIN, LOW);    // driver activé (actif bas)
+        running = true;
+        LOG("[cmd] RUN");
+    } else if (strcmp(cmd, "STOP") == 0) {
+        running = false;
+        digitalWrite(ENA_PIN, HIGH);   // driver coupé
+        LOG("[cmd] STOP");
+    } else if (strncmp(cmd, "UP:", 3) == 0) {
+        pendingSteps = +atol(cmd + 3);
+    } else if (strncmp(cmd, "DN:", 3) == 0) {
+        pendingSteps = -atol(cmd + 3);
+    } else if (strcmp(cmd, "HOLD") == 0) {
+        pendingSteps = 0;
+    } else if (strcmp(cmd, "GETBURST") == 0) {
+        burstDumpRequested = true;
+    } else if (strncmp(cmd, "VEXC:", 5) == 0) {
+        float v = atof(cmd + 5);
+        if (v < 0.0f) v = 0.0f;
+        if (v > 3.3f) v = 3.3f;
+        analogWrite(DAC_PIN, (uint32_t)(v / 3.3f * 1023.0f + 0.5f));
+        // Accuse de reception avec la valeur reellement appliquee
+        Serial3.print("VEXC_OK:");
+        Serial3.println(v, 3);
+        LOG("[dac] Vexc = " + String(v, 3) + " V (ack envoye)");
+    } else if (cmd[0] != '\0') {
+        LOG(String("[cmd] ? ") + cmd);
+    }
+}
+
+// ============================================================
+//  Setup
+// ============================================================
+void setup() {
+    pinMode(PUL_PIN, OUTPUT);
+    pinMode(DIR_PIN, OUTPUT);
+    pinMode(ENA_PIN, OUTPUT);
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(DIR_PIN, LOW);
+    digitalWrite(ENA_PIN, HIGH);       // driver coupé tant que pas de RUN
+
+    Serial.begin(115200);
+    unsigned long t0 = millis();
+    while (!Serial && millis() - t0 < 3000);
+    LOG("=== OpenRB-150 boot ===");
+
+    Serial3.begin(LINK_BAUD);
+    LOG("Serial3 @ 4800 bauds OK");
+
+    analogReadResolution(12);
+    analogRead(ADC_PIN);               // configure le mux analogique du pin A1
+    setupADC();  LOG("ADC freerun OK (entree A1)");
+
+    analogWriteResolution(10);
+    analogWrite(DAC_PIN, 0);           // DAC A0 : excitation a 0 V au boot
+    LOG("DAC A0 OK — Vexc = 0 V (commande VEXC:<volts>)");
+    setupDMA();  LOG("DMA OK");
+    setupTimer(F_PULSE);
+    LOG("TC3 OK — en attente de RUN (trigger step " + String(TRIGGER_STEP) + ")");
+}
+
+// ============================================================
+//  Loop
+// ============================================================
+void loop() {
+    // --- Burst terminé : analyse + envoi du résumé ---------------
+    if (burstReady) {
+        burstReady = false;
+        uint32_t topMean;
+        int32_t  recal;
+        analyzeBurst(&topMean, &recal);
+
+        Serial3.print("PEAK:");
+        Serial3.print(topMean);
+        Serial3.print(',');
+        Serial3.println(recal);
+        LOG("[tx] PEAK:" + String(topMean) + "," + String(recal));
+
+        if (burstDumpRequested) {
+            burstDumpRequested = false;
+            sendBurstDecimated();
+            LOG("[tx] BURST decime envoye");
+        }
+    }
+
+    // --- Mouvement Dynamixel en attente ---------------------------
+    if (pendingSteps != 0) {
+        int32_t steps = pendingSteps;
+        pendingSteps = 0;
+        moveDynamixel(steps);
+        LOG("[dxl] move " + String(steps) + " steps");
+    }
+
+    // --- Réception ESP8266 : lecture ligne non bloquante ----------
+    static char   rxBuf[32];
+    static size_t rxLen = 0;
+    while (Serial3.available()) {
+        char c = (char)Serial3.read();
+        if (c == '\n') {
+            rxBuf[rxLen] = '\0';
+            digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+            handleCommand(rxBuf);
+            rxLen = 0;
+        } else if (c == '\r') {
+            // ignoré
+        } else if (rxLen < sizeof(rxBuf) - 1) {
+            rxBuf[rxLen++] = c;
+        } else {
+            rxLen = 0;  // ligne corrompue
+        }
+    }
+}

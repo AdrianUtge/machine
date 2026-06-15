@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 
+#include "motor_homing.h"
+
 // --- Machine enums ---------------------------------------------------------
 
 enum class MachineMode
@@ -22,7 +24,7 @@ public:
 
     void begin();
     void update();
-
+    void stop(); 
     void home();
     void start();
     void hardReset();
@@ -31,6 +33,7 @@ public:
     bool setFrequency(float frequency);
 
     bool isHomed() const;
+    MachineMode getMode() const;
 
     const char* stateToString() const;
 
@@ -43,6 +46,11 @@ public:
 
 private:
     void resetMeasurements();
+    void refreshHx711Status();
+    bool calibrateLoadCellsEmpty();
+    bool updateForceMeasurement();
+    float readLoadCellRawAverage(uint8_t samples);
+    void setErrorState();
 
 private:
     MachineMode _mode;
@@ -55,7 +63,13 @@ private:
     float _current;
     float _force;
 
+    long _loadCellOffset;
+    float _loadCellRaw;
+    bool _hx711Ready;
+
     bool _slaveOnline;
 
     unsigned long _lastUpdateMs;
+
+    MotorHoming _motor;
 };

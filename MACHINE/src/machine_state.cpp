@@ -1,6 +1,11 @@
-
+/*
+OpenRB-150 modular firmware
+Centralized machine state
+*/
 
 #include "machine_state.h"
+
+#include "HX711.h"
 
 // --- Constants -------------------------------------------------------------
 
@@ -9,6 +14,16 @@ static constexpr int32_t MACHINE_MAX_SPEED = 10000;
 
 static constexpr float MACHINE_MIN_FREQ = 0.0f;
 static constexpr float MACHINE_MAX_FREQ = 1000.0f;
+
+static constexpr uint8_t HX711_DT_PIN = 6;
+static constexpr uint8_t HX711_SCK_PIN = 9;
+
+static constexpr uint8_t HX711_TARE_SAMPLES = 20;
+static constexpr uint8_t HX711_READ_SAMPLES = 10;
+
+// --- File globals ----------------------------------------------------------
+
+static HX711 g_scale;
 
 // --- Constructor -----------------------------------------------------------
 
@@ -20,8 +35,12 @@ MachineState::MachineState()
       _position(0.0f),
       _current(0.0f),
       _force(0.0f),
-      _slaveOnline(true),
-      _lastUpdateMs(0U)
+      _loadCellOffset(0),
+      _loadCellRaw(0.0f),
+      _hx711Ready(false),
+      _slaveOnline(false),
+      _lastUpdateMs(0U),
+      _motor()
 {
 }
 
@@ -29,13 +48,29 @@ MachineState::MachineState()
 
 void MachineState::begin()
 {
+    g_scale.begin(HX711_DT_PIN, HX711_SCK_PIN);
+
     _mode = MachineMode::IDLE;
     _homed = false;
     _speed = 100;
     _frequency = 0.8f;
-    resetMeasurements();
-    _slaveOnline = true;
+    _slaveOnline = false;
     _lastUpdateMs = millis();
+
+    resetMeasurements();
+
+    const bool motorReady = _motor.begin(Serial);
+    refreshHx711Status();
+
+    if (_hx711Ready)
+    {
+        calibrateLoadCellsEmpty();
+    }
+
+    if (!motorReady)
+    {
+        setErrorState();
+    }
 }
 
 void MachineState::update()
@@ -49,43 +84,86 @@ void MachineState::update()
 
     _lastUpdateMs = now;
 
+    refreshHx711Status();
+
+    if (_motor.isCalibrated())
+    {
+        _position = _motor.getPositionMm();
+        _current = static_cast<float>(abs(_motor.getCurrentRaw()));
+    }
+
     if (_mode == MachineMode::RUNNING)
     {
-        _position += (_speed * _frequency) * 0.001f;
-        _current = 0.25f + (static_cast<float>(_speed) * 0.002f);
-        _force = 1.0f + (_frequency * 2.5f);
+        if (!updateForceMeasurement())
+        {
+            setErrorState();
+            return;
+        }
     }
-    else if (_mode == MachineMode::HOMING)
+    else if (_mode == MachineMode::READY)
     {
-        _position = 0.0f;
-        _current = 0.2f;
-        _force = 0.0f;
-
-        _homed = true;
-        _mode = MachineMode::READY;
+        if (_hx711Ready)
+        {
+            updateForceMeasurement();
+        }
     }
-    else
+    else if (_mode == MachineMode::IDLE)
     {
-        _current = 0.1f;
         _force = 0.0f;
     }
 }
 
 void MachineState::home()
 {
+    if (_mode == MachineMode::ERROR)
+    {
+        return;
+    }
+
     _mode = MachineMode::HOMING;
+
+    const bool homingOk = _motor.doHoming();
+
+    if (!homingOk)
+    {
+        _homed = false;
+        setErrorState();
+        return;
+    }
+
+    _homed = true;
+    _position = _motor.getPositionMm();
+    _current = static_cast<float>(abs(_motor.getCurrentRaw()));
+    _mode = MachineMode::READY;
 }
 
 void MachineState::start()
 {
-    if (_homed)
+    if (!_homed)
     {
-        _mode = MachineMode::RUNNING;
+        setErrorState();
+        return;
     }
-    else
+
+    if (!_hx711Ready)
     {
-        _mode = MachineMode::ERROR;
+        setErrorState();
+        return;
     }
+
+    if (!calibrateLoadCellsEmpty())
+    {
+        setErrorState();
+        return;
+    }
+
+    _mode = MachineMode::RUNNING;
+}
+
+void MachineState::stop()
+{
+    _motor.torqueOff();
+    _mode = MachineMode::IDLE;
 }
 
 void MachineState::hardReset()
@@ -94,8 +172,15 @@ void MachineState::hardReset()
     _homed = false;
     _speed = 100;
     _frequency = 0.8f;
+    _slaveOnline = false;
+
+    refreshHx711Status();
     resetMeasurements();
-    _slaveOnline = true;
+
+    if (_hx711Ready)
+    {
+        calibrateLoadCellsEmpty();
+    }
 }
 
 bool MachineState::setSpeed(int32_t speed)
@@ -123,6 +208,11 @@ bool MachineState::setFrequency(float frequency)
 bool MachineState::isHomed() const
 {
     return _homed;
+}
+
+MachineMode MachineState::getMode() const
+{
+    return _mode;
 }
 
 const char* MachineState::stateToString() const
@@ -186,4 +276,51 @@ void MachineState::resetMeasurements()
     _position = 0.0f;
     _current = 0.0f;
     _force = 0.0f;
+    _loadCellRaw = 0.0f;
+    _loadCellOffset = 0;
+}
+
+void MachineState::refreshHx711Status()
+{
+    _hx711Ready = g_scale.is_ready();
+}
+
+bool MachineState::calibrateLoadCellsEmpty()
+{
+    refreshHx711Status();
+
+    if (!_hx711Ready)
+    {
+        return false;
+    }
+
+    _loadCellOffset = static_cast<long>(readLoadCellRawAverage(HX711_TARE_SAMPLES));
+    _force = 0.0f;
+
+    return true;
+}
+
+bool MachineState::updateForceMeasurement()
+{
+    refreshHx711Status();
+
+    if (!_hx711Ready)
+    {
+        return false;
+    }
+
+    _loadCellRaw = readLoadCellRawAverage(HX711_READ_SAMPLES);
+    _force = _loadCellRaw - static_cast<float>(_loadCellOffset);
+
+    return true;
+}
+
+float MachineState::readLoadCellRawAverage(uint8_t samples)
+{
+    return static_cast<float>(g_scale.read_average(samples));
+}
+
+void MachineState::setErrorState()
+{
+    _mode = MachineMode::ERROR;
 }
