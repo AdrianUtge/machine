@@ -13,11 +13,26 @@ import threading
 import time
 
 from comm.serial_link import SerialLink
+from comm.wifi_link import WiFiLink
 from config import DEFAULT_BAUDRATE, DEFAULT_PORT, DEFAULT_TIMEOUT
 from core.controller import MachineController
 from core.state import MachineState
 from debug.logger import DebugLogger
 from comm.ports import choose_serial_port
+import sys
+import os
+from pathlib import Path
+
+# Add tools/config to path for WiFiManager
+tools_config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../tools/config'))
+if tools_config_path not in sys.path:
+    sys.path.insert(0, tools_config_path)
+
+try:
+    from wifi_manager import WiFiManager
+except ImportError as e:
+    print(f"Warning: Could not import WiFiManager: {e}")
+    WiFiManager = None
 
 # --- Models ----------------------------------------------------------
 
@@ -134,31 +149,122 @@ async def get_available_ports():
     ports = [port.device for port in serial.tools.list_ports.comports()]
     return {"ports": ports}
 
+@app.get("/api/wifi-interfaces")
+async def get_wifi_interfaces():
+    """Get list of available WiFi interfaces."""
+    if WiFiManager is None:
+        return {"interfaces": [], "error": "WiFi manager not available"}
+
+    try:
+        manager = WiFiManager()
+        interfaces = manager.get_available_wifi_interfaces()
+        return {"interfaces": interfaces}
+    except Exception as e:
+        return {"interfaces": [], "error": str(e)}
+
+def _is_wifi_interface(port: str) -> bool:
+    """Check if the port string is a WiFi interface name."""
+    # WiFi interfaces on macOS start with 'en', on Linux with 'wlan', on Windows with 'WiFi'
+    wifi_prefixes = ('en', 'wlan', 'wifi', 'br', 'vir')
+    return any(port.lower().startswith(prefix) for prefix in wifi_prefixes) or port in [
+        'wlan0', 'wlan1', 'eth0', 'eth1', 'en0', 'en1', 'en2', 'en3', 'en4', 'en5'
+    ]
+
 @app.post("/api/connect")
 async def connect(request: ConnectRequest):
-    """Connect to machine on specified port."""
+    """Connect to machine on specified port or WiFi interface."""
     global controller
 
     try:
-        link = SerialLink(
-            port=request.port,
-            baudrate=DEFAULT_BAUDRATE,
-            timeout=DEFAULT_TIMEOUT,
-        )
-        state = MachineState()
-        logger = DebugLogger()
+        # Check if this is a WiFi interface or a serial port
+        if _is_wifi_interface(request.port):
+            # WiFi connection
+            if WiFiManager is None:
+                raise HTTPException(status_code=500, detail="WiFi manager not available")
 
-        controller = MachineController(link, state, logger)
-        ok = controller.connect()
+            try:
+                wifi_manager = WiFiManager()
 
-        if ok:
-            log_action("state", f"Connected to {request.port}")
-            # Start background reader for continuous monitoring
-            start_background_reader()
-            return {"success": True, "message": f"Connected to {request.port}"}
+                # Verify we're on the correct WiFi network
+                if not wifi_manager.is_correct_wifi():
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Not on correct WiFi network. Expected: {wifi_manager.config.get('wifi', {}).get('ssid', 'unknown')}"
+                    )
+
+                # Get NodeMCU configuration
+                nodeMcu_config = wifi_manager.config.get('nodeMcu', {})
+                if not nodeMcu_config:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="NodeMCU configuration not found in setup.json"
+                    )
+
+                # Create WiFi link
+                ip = nodeMcu_config.get('ip')
+                port = nodeMcu_config.get('port', 8080)
+                key = nodeMcu_config.get('key', '')
+
+                if not ip:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="NodeMCU IP address not configured in setup.json"
+                    )
+
+                wifi_link = WiFiLink(ip=ip, port=port, auth_token=key)
+
+                # Test connection
+                if not wifi_link.connect():
+                    log_action("error", f"Failed to connect to NodeMCU at {ip}:{port}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to connect to NodeMCU at {ip}:{port}. Make sure:\n1. NodeMCU is powered on\n2. ESP8266 is connected to WiFi\n3. IP address and port are correct"
+                    )
+
+                # Create controller with WiFi link
+                state = MachineState()
+                logger = DebugLogger()
+                controller = MachineController(wifi_link, state, logger)
+
+                log_action("state", f"Connected via WiFi to {ip}:{port}")
+                return {"success": True, "message": f"Connected via WiFi to {ip}:{port}"}
+
+            except HTTPException:
+                raise
+            except FileNotFoundError:
+                raise HTTPException(
+                    status_code=500,
+                    detail="setup.json not found. Please configure WiFi settings in tools/config/setup.json"
+                )
+            except Exception as e:
+                log_action("error", f"WiFi connection error: {str(e)}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"WiFi connection error: {str(e)}"
+                )
         else:
-            log_action("error", f"Failed to connect to {request.port}")
-            raise HTTPException(status_code=500, detail="Failed to connect")
+            # Serial connection
+            link = SerialLink(
+                port=request.port,
+                baudrate=DEFAULT_BAUDRATE,
+                timeout=DEFAULT_TIMEOUT,
+            )
+            state = MachineState()
+            logger = DebugLogger()
+
+            controller = MachineController(link, state, logger)
+            ok = controller.connect()
+
+            if ok:
+                log_action("state", f"Connected to {request.port}")
+                # Start background reader for continuous monitoring
+                start_background_reader()
+                return {"success": True, "message": f"Connected to {request.port}"}
+            else:
+                log_action("error", f"Failed to connect to {request.port}")
+                raise HTTPException(status_code=500, detail="Failed to connect")
+    except HTTPException:
+        raise
     except Exception as e:
         log_action("error", str(e))
         raise HTTPException(status_code=500, detail=str(e))

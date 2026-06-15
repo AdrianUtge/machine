@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Usb, Bluetooth, RefreshCw, Cable, AlertCircle } from 'lucide-react';
+import { Usb, Bluetooth, RefreshCw, Cable, AlertCircle, Wifi } from 'lucide-react';
 
-type ConnectionType = 'usb' | 'bluetooth' | 'unknown';
+type ConnectionType = 'usb' | 'bluetooth' | 'wifi' | 'unknown';
 
 interface SerialPort {
   name: string;
@@ -25,6 +25,8 @@ export default function ConnectionScreen({
   const [selectedPort, setSelectedPort] = useState<string>('');
   const [isConnecting, setIsConnecting] = useState(false);
   const [ports, setPorts] = useState<SerialPort[]>([]);
+  const [wifiInterfaces, setWifiInterfaces] = useState<SerialPort[]>([]);
+  const [loadingWifi, setLoadingWifi] = useState(true);
 
   // Update ports when availablePorts change
   useEffect(() => {
@@ -53,6 +55,31 @@ export default function ConnectionScreen({
     }
   }, [availablePorts, selectedPort]);
 
+  // Load WiFi interfaces on mount
+  useEffect(() => {
+    const loadWifiInterfaces = async () => {
+      try {
+        const response = await fetch('http://127.0.0.1:8000/api/wifi-interfaces');
+        const data = await response.json();
+
+        if (data.interfaces && Array.isArray(data.interfaces)) {
+          const formattedWifi: SerialPort[] = data.interfaces.map((interfaceName: string) => ({
+            name: interfaceName,
+            type: 'wifi' as const,
+            status: 'available' as const,
+          }));
+          setWifiInterfaces(formattedWifi);
+        }
+      } catch (err) {
+        console.error('Failed to load WiFi interfaces:', err);
+      } finally {
+        setLoadingWifi(false);
+      }
+    };
+
+    loadWifiInterfaces();
+  }, []);
+
   const handleRefresh = async () => {
     // This will trigger a refresh of ports from the parent component
     // For now, just reset selection to force re-fetch
@@ -62,11 +89,13 @@ export default function ConnectionScreen({
   const handleConnect = async () => {
     if (!selectedPort) return;
 
-    const port = ports.find(p => p.name === selectedPort);
+    // Check both ports and WiFi interfaces
+    const port = ports.find(p => p.name === selectedPort) || wifiInterfaces.find(w => w.name === selectedPort);
     if (!port || port.status !== 'available') return;
 
     setIsConnecting(true);
     try {
+      console.log('Connecting to:', selectedPort);
       await onConnect(selectedPort);
     } catch (err) {
       console.error('Connection error:', err);
@@ -99,6 +128,7 @@ export default function ConnectionScreen({
           </div>
         )}
 
+        {/* Serial Ports */}
         <div className="mb-6">
           <div className="flex items-center justify-between mb-4">
             <label className="text-lg font-semibold">Available Ports</label>
@@ -115,7 +145,7 @@ export default function ConnectionScreen({
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {ports.length === 0 ? (
               <div className="text-center py-8 text-slate-400">
-                <p className="mb-2">No ports detected</p>
+                <p className="mb-2">No serial ports detected</p>
                 <p className="text-xs">Make sure your Arduino is connected and click Refresh</p>
               </div>
             ) : (
@@ -157,6 +187,46 @@ export default function ConnectionScreen({
             )}
           </div>
         </div>
+
+        {/* WiFi Interfaces */}
+        {!loadingWifi && wifiInterfaces.length > 0 && (
+          <div className="mb-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Wifi className="w-5 h-5 text-purple-400" />
+              <label className="text-lg font-semibold">WiFi Interfaces</label>
+            </div>
+
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {wifiInterfaces.map((wifi) => (
+                <button
+                  key={wifi.name}
+                  onClick={() => setSelectedPort(wifi.name)}
+                  disabled={wifi.status !== 'available' || isConnecting}
+                  className={`w-full flex items-center justify-between p-4 rounded-lg transition-all ${
+                    selectedPort === wifi.name
+                      ? 'bg-purple-600 border-2 border-purple-400'
+                      : wifi.status === 'available'
+                      ? 'bg-slate-700 hover:bg-slate-600 border-2 border-transparent cursor-pointer'
+                      : 'bg-slate-700 opacity-50 cursor-not-allowed border-2 border-transparent'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Wifi className="w-5 h-5 text-purple-400" />
+                    <div className="text-left">
+                      <div className="font-mono font-semibold text-sm">{wifi.name}</div>
+                      <div className="text-xs text-slate-400">WiFi Interface</div>
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-xs font-semibold px-2 py-1 rounded bg-green-600 text-green-100">
+                      available
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="mb-4">
           <div className={`text-sm px-3 py-2 rounded ${

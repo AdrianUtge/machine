@@ -23,8 +23,24 @@ logger = logging.getLogger(__name__)
 
 
 class WiFiManager:
-    def __init__(self, config_path: str = "config/setup.json"):
+    def __init__(self, config_path: str = None):
         """Initialize WiFi Manager with configuration file"""
+        if config_path is None:
+            # Try to find setup.json in the current directory or tools/config
+            possible_paths = [
+                Path("setup.json"),
+                Path("config/setup.json"),
+                Path(__file__).parent / "setup.json",
+                Path(__file__).parent.parent.parent / "tools" / "config" / "setup.json",
+            ]
+            config_path = None
+            for path in possible_paths:
+                if path.exists():
+                    config_path = str(path)
+                    break
+            if config_path is None:
+                config_path = str(Path(__file__).parent / "setup.json")
+
         self.config_path = Path(config_path)
         self.config = self._load_config()
         self.current_ssid = None
@@ -33,8 +49,8 @@ class WiFiManager:
     def _load_config(self) -> Dict[str, Any]:
         """Load and parse setup.json configuration file"""
         if not self.config_path.exists():
-            logger.error(f"Config file not found: {self.config_path}")
-            raise FileNotFoundError(f"Configuration file not found at {self.config_path}")
+            logger.warning(f"Config file not found: {self.config_path}, using empty config")
+            return {}
 
         try:
             with open(self.config_path, 'r') as f:
@@ -43,7 +59,84 @@ class WiFiManager:
             return config
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in config file: {e}")
-            raise
+            return {}
+
+    def get_available_wifi_interfaces(self) -> list[str]:
+        """Get list of available WiFi interfaces on the system"""
+        system = platform.system()
+        try:
+            if system == "Darwin":  # macOS
+                return self._get_wifi_interfaces_macos()
+            elif system == "Linux":
+                return self._get_wifi_interfaces_linux()
+            elif system == "Windows":
+                return self._get_wifi_interfaces_windows()
+            else:
+                logger.warning(f"Unsupported OS: {system}")
+                return []
+        except Exception as e:
+            logger.error(f"Error getting WiFi interfaces: {e}")
+            return []
+
+    def _get_wifi_interfaces_macos(self) -> list[str]:
+        """Get available WiFi interfaces on macOS"""
+        try:
+            result = subprocess.run(
+                ["networksetup", "-listallhardwareports"],
+                capture_output=True,
+                text=True
+            )
+            interfaces = []
+            for line in result.stdout.split('\n'):
+                if 'Wi-Fi' in line or 'AirPort' in line:
+                    # Next line should be Device: <interface>
+                    continue
+                if line.startswith('Device:'):
+                    interface = line.split('Device:')[1].strip()
+                    if interface and interface != 'N/A':
+                        interfaces.append(interface)
+            return interfaces
+        except Exception as e:
+            logger.error(f"Failed to get WiFi interfaces on macOS: {e}")
+            return []
+
+    def _get_wifi_interfaces_linux(self) -> list[str]:
+        """Get available WiFi interfaces on Linux"""
+        try:
+            result = subprocess.run(
+                ["nmcli", "dev", "status"],
+                capture_output=True,
+                text=True
+            )
+            interfaces = []
+            for line in result.stdout.split('\n'):
+                if 'wifi' in line.lower():
+                    parts = line.split()
+                    if parts:
+                        interfaces.append(parts[0])
+            return interfaces
+        except Exception as e:
+            logger.error(f"Failed to get WiFi interfaces on Linux: {e}")
+            return []
+
+    def _get_wifi_interfaces_windows(self) -> list[str]:
+        """Get available WiFi interfaces on Windows"""
+        try:
+            result = subprocess.run(
+                ["netsh", "wlan", "show", "interfaces"],
+                capture_output=True,
+                text=True
+            )
+            interfaces = []
+            for line in result.stdout.split('\n'):
+                if 'Name' in line and ':' in line:
+                    interface = line.split(':', 1)[1].strip()
+                    if interface:
+                        interfaces.append(interface)
+            return interfaces
+        except Exception as e:
+            logger.error(f"Failed to get WiFi interfaces on Windows: {e}")
+            return []
 
     def get_connected_wifi(self) -> Optional[str]:
         """Get the SSID of the currently connected WiFi network"""
@@ -117,8 +210,16 @@ class WiFiManager:
 
     def is_correct_wifi(self) -> bool:
         """Check if connected to the correct WiFi network"""
+        if not self.config or 'wifi' not in self.config:
+            logger.warning("No WiFi configuration found")
+            return False
+
         self.current_ssid = self.get_connected_wifi()
-        expected_ssid = self.config['wifi']['ssid']
+        expected_ssid = self.config.get('wifi', {}).get('ssid')
+
+        if not expected_ssid:
+            logger.warning("No expected WiFi SSID in configuration")
+            return False
 
         if self.current_ssid is None:
             logger.error("Could not determine current WiFi network")

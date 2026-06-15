@@ -53,7 +53,11 @@ export const useMachineController = () => {
         body: JSON.stringify({ port }),
       });
 
-      if (!response.ok) throw new Error('Connection failed');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errorMessage = errorData.detail || `Connection failed (${response.status})`;
+        throw new Error(errorMessage);
+      }
 
       setIsConnected(true);
 
@@ -98,8 +102,10 @@ export const useMachineController = () => {
         });
       }
     } catch (err) {
-      setError('Connection failed: ' + String(err));
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      setError(errorMessage);
       setIsConnected(false);
+      console.error('Connection error:', err);
     } finally {
       setIsLoading(false);
     }

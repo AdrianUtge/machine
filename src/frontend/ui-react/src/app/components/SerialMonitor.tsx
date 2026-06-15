@@ -27,11 +27,16 @@ export default function SerialMonitor({
   const [manualCommand, setManualCommand] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const logsContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (autoScroll) {
-      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
+    if (!autoScroll || !logsContainerRef.current) return;
+
+    // Auto-scroll only within the monitor container, not the page
+    const container = logsContainerRef.current;
+    setTimeout(() => {
+      container.scrollTop = container.scrollHeight;
+    }, 0);
   }, [logs, autoScroll]);
 
   const filteredLogs = filter === 'all' ? logs : logs.filter(log => log.type === filter);
@@ -145,7 +150,7 @@ export default function SerialMonitor({
         </div>
       </div>
 
-      <div className="h-64 overflow-y-auto p-2 bg-slate-900 font-mono text-xs border-b border-slate-700">
+      <div ref={logsContainerRef} className="h-64 overflow-y-auto p-2 bg-slate-900 font-mono text-xs border-b border-slate-700">
         {filteredLogs.length === 0 ? (
           <div className="text-slate-500 text-center py-8">No logs yet</div>
         ) : (

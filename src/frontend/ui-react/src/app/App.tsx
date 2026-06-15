@@ -86,19 +86,24 @@ export default function App() {
   const handleConnect = async (port: string) => {
     setConnectionError(null);
     try {
+      console.log('🔗 Connecting to:', port);
       await connect(port);
+      console.log('✅ Connected successfully');
       // Connection will update isConnected state
       // We'll proceed to main screen after connection success
       setTimeout(() => {
         // Give time for state to update
         if (error) {
+          console.log('⚠️ Error from hook:', error);
           setConnectionError(error);
         } else {
+          console.log('✅ No errors, showing main screen');
           setShowConnection(false);
         }
       }, 100);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to connect';
+      console.log('❌ Connection failed:', errorMsg);
       setConnectionError(errorMsg);
       console.error('Connection error:', err);
     }

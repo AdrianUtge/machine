@@ -6,9 +6,10 @@
   },
   "nodeMcu": {
     "ip": "192.168.1.100",
-    "port": 80,
-    "key": "9f8a7b6c5d4e3f2g1h0i",
-    "protocol": "http"
+    "port": 8080,
+    "key": "your_secret_bearer_token",
+    "protocol": "http",
+    "timeout": 5
   },
   "serial": {
     "port": "auto",
