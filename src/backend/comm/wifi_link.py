@@ -216,10 +216,10 @@ class WiFiLink:
         """
         return self.send_line(data)
 
-    def readline(self, timeout: Optional[float] = None) -> Optional[str]:
+    def read_line(self, timeout: Optional[float] = None) -> Optional[str]:
         """
-        Read response from ESP8266.
-        For compatibility with SerialLink interface.
+        Read response from ESP8266 (compatibility with SerialLink).
+        For now, returns the status as a JSON string.
 
         Args:
             timeout: Read timeout (ignored for now)
@@ -231,6 +231,10 @@ class WiFiLink:
         if status:
             return json.dumps(status)
         return None
+
+    def readline(self, timeout: Optional[float] = None) -> Optional[str]:
+        """Alias for read_line (compatibility)."""
+        return self.read_line(timeout)
 
     def is_open(self) -> bool:
         """Check if connection is open."""
