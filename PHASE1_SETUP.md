@@ -5,36 +5,42 @@
 **Phase 1 (Current):** PC → NodeMCU WiFi REST API → USB Logging  
 **Phase 2 (Future):** NodeMCU → OpenRB-150 via UART
 
-In Phase 1, the ESP8266 acts as a simple WiFi gateway that:
-- Receives REST API commands from the backend
-- Logs them to USB serial port
-- Returns success response
-- Does NOT communicate with OpenRB yet (that's Phase 2)
+The ESP8266 **creates its own WiFi network** (Access Point mode). Your PC connects TO this network, then communicates with the REST API.
+
+In Phase 1, the ESP8266:
+- Creates a WiFi Access Point (broadcast its own network)
+- Hosts a REST API server
+- Receives commands from connected clients
+- Logs all commands to USB serial port
+- Returns success responses
+- Does NOT communicate with OpenRB yet (Phase 2)
 
 ```
-Frontend (React)
-    ↓ HTTP
-Backend (FastAPI)
-    ↓ HTTP
-ESP8266 REST API
-    ↓ USB Serial (115200)
-Terminal/Log file
+PC/Laptop ──→ Connects to ESP8266 WiFi network
+    ↓
+Frontend (React) ──HTTP──→ Backend (FastAPI)
+    ↓
+Backend ──HTTP──→ ESP8266 REST API (192.168.4.1:8080)
+    ↓
+ESP8266 ──USB──→ Terminal/Log file
     
 [OpenRB-150 communication comes in Phase 2]
 ```
 
 ## Quick Setup
 
-### 1. Configure ESP8266 WiFi
+### 1. Configure ESP8266 WiFi Network
 
 Edit `hardware/machine_final/ESP8266/include/config.h`:
 
 ```cpp
-#define WIFI_SSID "YourNetwork"
-#define WIFI_PASSWORD "YourPassword"
-#define AUTH_TOKEN "test_token_12345"
+#define WIFI_SSID "NodeMCU-Control"    // Nom du réseau créé par l'ESP8266
+#define WIFI_PASSWORD "12345678"       // Mot de passe du réseau
+#define AUTH_TOKEN "bearer_token"      // Token pour l'API REST
 #define HTTP_PORT 8080
 ```
+
+⚠️ **Important:** L'ESP8266 **crée ce réseau WiFi** - vous vous connecterez À ce réseau avec votre PC/laptop
 
 ### 2. Upload Firmware
 
@@ -51,62 +57,77 @@ Output:
 ║  Phase 1: Command Logging Only         ║
 ╚════════════════════════════════════════╝
 
-[WiFi] Connecting to: YourNetwork
-.......
-[WiFi] ✓ Connected! IP: 192.168.1.100
-[WiFi] RSSI: -45 dBm
+[WiFi] Starting Access Point: NodeMCU-Control
+[WiFi] ✓ Access Point started!
+[WiFi] SSID: NodeMCU-Control
+[WiFi] IP Address: 192.168.4.1
+[WiFi] Gateway: 192.168.4.1
 [Server] HTTP server started on port 8080
 
 [Boot] ✓ Ready to receive commands via REST API
-[Boot] Endpoint: http://192.168.1.100:8080
-[Boot] All commands will be logged to this USB port
+[Boot] ═════════════════════════════════════════
+[Boot] SSID: NodeMCU-Control
+[Boot] IP: http://192.168.4.1:8080
+[Boot] ═════════════════════════════════════════
+[Boot] Connect your PC to this WiFi network
+[Boot] Then access the REST API at the IP above
 ```
 
-**Copy the IP address!** (e.g., 192.168.1.100)
+✅ **L'IP est toujours 192.168.4.1:8080** (standard AP mode)
 
-### 3. Configure Backend
+### 3. Connect Your PC to ESP8266 WiFi
+
+On your PC/Laptop, find WiFi networks and connect to:
+- **SSID:** NodeMCU-Control  
+- **Password:** 12345678
+
+(Or whatever you configured in config.h)
+
+### 4. Configure Backend
 
 Create `tools/config/setup.json`:
 
 ```json
 {
   "wifi": {
-    "ssid": "YourNetwork",
-    "password": "YourPassword"
+    "ssid": "NodeMCU-Control",
+    "password": "12345678"
   },
   "nodeMcu": {
-    "ip": "192.168.1.100",
+    "ip": "192.168.4.1",
     "port": 8080,
-    "key": "test_token_12345"
+    "key": "bearer_token_secret"
   }
 }
 ```
 
-Replace IP with the one from step 2!
+⚠️ **L'IP est toujours 192.168.4.1** (standard AP mode)
 
-### 4. Start Backend
+### 5. Start Backend
 
 ```bash
 cd src
 ./start.sh
 ```
 
-### 5. Test via cURL
+### 6. Test via cURL
+
+Assurez-vous que votre PC est connecté au WiFi "NodeMCU-Control", puis:
 
 ```bash
 # Test status
-curl -H "Authorization: Bearer test_token_12345" \
-  http://192.168.1.100:8080/api/status
+curl -H "Authorization: Bearer bearer_token_secret" \
+  http://192.168.4.1:8080/api/status
 
 # Send a command
 curl -X POST \
-  -H "Authorization: Bearer test_token_12345" \
+  -H "Authorization: Bearer bearer_token_secret" \
   -H "Content-Type: application/json" \
   -d '{"command":"HIGH"}' \
-  http://192.168.1.100:8080/api/command
+  http://192.168.4.1:8080/api/command
 ```
 
-### 6. Watch USB Logs
+### 7. Watch USB Logs
 
 Keep terminal with serial monitor open:
 

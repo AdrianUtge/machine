@@ -152,33 +152,28 @@ void handleNotFound() {
         "{\"error\":\"Not found\",\"path\":\"" + server.uri() + "\"}");
 }
 
-// ===== Initialisation WiFi =====
+// ===== Initialisation WiFi (AP Mode) =====
 bool setupWiFi() {
-    Serial.print("\n[WiFi] Connecting to: ");
+    Serial.print("\n[WiFi] Starting Access Point: ");
     Serial.println(WIFI_SSID);
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    // Mode AP (Access Point) - l'ESP8266 broadcast son propre réseau
+    WiFi.mode(WIFI_AP);
+    bool apStarted = WiFi.softAP(WIFI_SSID, WIFI_PASSWORD);
 
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-        delay(500);
-        Serial.print(".");
-        attempts++;
-    }
-
-    Serial.println();
-
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[WiFi] ERROR: Failed to connect!");
+    if (!apStarted) {
+        Serial.println("[WiFi] ERROR: Failed to start AP!");
         return false;
     }
 
-    Serial.print("[WiFi] ✓ Connected! IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("[WiFi] RSSI: ");
-    Serial.print(WiFi.RSSI());
-    Serial.println(" dBm");
+    Serial.println("[WiFi] ✓ Access Point started!");
+    Serial.print("[WiFi] SSID: ");
+    Serial.println(WIFI_SSID);
+    Serial.print("[WiFi] IP Address: ");
+    Serial.println(WiFi.softAPIP());
+    Serial.print("[WiFi] Gateway: ");
+    Serial.println(WiFi.softAPIP());
+    Serial.println("[WiFi] Password: " WIFI_PASSWORD);
 
     return true;
 }
@@ -222,11 +217,17 @@ void setup() {
     setupServer();
 
     Serial.println("\n[Boot] ✓ Ready to receive commands via REST API");
-    Serial.print("[Boot] Endpoint: http://");
-    Serial.print(WiFi.localIP());
+    Serial.println("[Boot] ═════════════════════════════════════════");
+    Serial.print("[Boot] SSID: ");
+    Serial.println(WIFI_SSID);
+    Serial.print("[Boot] IP: http://");
+    Serial.print(WiFi.softAPIP());
     Serial.print(":");
     Serial.println(HTTP_PORT);
-    Serial.println("[Boot] All commands will be logged to this USB port\n");
+    Serial.println("[Boot] ═════════════════════════════════════════");
+    Serial.println("[Boot] Connect your PC to this WiFi network");
+    Serial.println("[Boot] Then access the REST API at the IP above");
+    Serial.println("[Boot] All commands will be logged here\n");
 }
 
 // ===== Loop principal =====
