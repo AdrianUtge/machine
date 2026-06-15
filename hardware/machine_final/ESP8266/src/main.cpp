@@ -36,16 +36,30 @@ struct SystemState {
 // ===== Fonction auxiliaire: Vérifier le token Bearer =====
 bool verifyAuthToken() {
     if (!server.hasHeader("Authorization")) {
-        Serial.println("[AUTH] Missing Authorization header");
+        Serial.println("[AUTH] ❌ Missing Authorization header");
         return false;
     }
+
     String authHeader = server.header("Authorization");
     String expectedAuth = String("Bearer ") + String(AUTH_TOKEN);
 
+    Serial.print("[AUTH] Received: ");
+    Serial.println(authHeader);
+    Serial.print("[AUTH] Expected: ");
+    Serial.println(expectedAuth);
+
     bool valid = (authHeader == expectedAuth);
+
     if (!valid) {
-        Serial.println("[AUTH] Invalid token");
+        Serial.println("[AUTH] ❌ Token mismatch!");
+        Serial.print("[AUTH] Received length: ");
+        Serial.print(authHeader.length());
+        Serial.print(" vs Expected length: ");
+        Serial.println(expectedAuth.length());
+    } else {
+        Serial.println("[AUTH] ✅ Token valid");
     }
+
     return valid;
 }
 
@@ -220,13 +234,18 @@ void setup() {
     Serial.println("[Boot] ═════════════════════════════════════════");
     Serial.print("[Boot] SSID: ");
     Serial.println(WIFI_SSID);
+    Serial.print("[Boot] Password: ");
+    Serial.println(WIFI_PASSWORD);
     Serial.print("[Boot] IP: http://");
     Serial.print(WiFi.softAPIP());
     Serial.print(":");
     Serial.println(HTTP_PORT);
+    Serial.print("[Boot] Auth Token: ");
+    Serial.println(AUTH_TOKEN);
     Serial.println("[Boot] ═════════════════════════════════════════");
     Serial.println("[Boot] Connect your PC to this WiFi network");
     Serial.println("[Boot] Then access the REST API at the IP above");
+    Serial.println("[Boot] Use the Auth Token above for API requests");
     Serial.println("[Boot] All commands will be logged here\n");
 }
 
