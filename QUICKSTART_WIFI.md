@@ -1,4 +1,7 @@
-# WiFi Setup Quick Start Guide
+# WiFi Setup Quick Start - Phase 1
+
+**Phase 1:** PC → NodeMCU REST API → USB Logging  
+**Phase 2 (later):** NodeMCU → OpenRB-150
 
 ## TL;DR (5 minutes)
 
