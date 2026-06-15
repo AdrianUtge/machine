@@ -219,17 +219,20 @@ class WiFiLink:
     def read_line(self, timeout: Optional[float] = None) -> Optional[str]:
         """
         Read response from ESP8266 (compatibility with SerialLink).
-        For now, returns the status as a JSON string.
+
+        For Phase 1, WiFi doesn't need to read responses line-by-line
+        like serial does. Commands are sent and ESP8266 logs them.
+
+        Returns None to indicate no data to parse.
 
         Args:
-            timeout: Read timeout (ignored for now)
+            timeout: Read timeout (ignored)
 
         Returns:
-            Response string or None
+            None (no line-by-line responses for WiFi)
         """
-        status = self.get_status()
-        if status:
-            return json.dumps(status)
+        # Phase 1: Don't try to parse WiFi responses as serial protocol
+        # The ESP8266 logs commands to its USB serial, that's enough
         return None
 
     def readline(self, timeout: Optional[float] = None) -> Optional[str]:
