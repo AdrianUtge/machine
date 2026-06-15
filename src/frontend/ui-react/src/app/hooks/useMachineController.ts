@@ -33,61 +33,98 @@ export const useMachineController = () => {
   // Get available ports
   const getAvailablePorts = useCallback(async () => {
     try {
+      console.log('🔍 FETCHING AVAILABLE PORTS...');
+      console.log('📤 GET', `${API_BASE}/ports`);
+
       const response = await fetch(`${API_BASE}/ports`);
+      console.log('📥 Response:', response.status, response.statusText);
+
       const data = await response.json();
+      console.log('✅ Available Ports:', data.ports);
+
       return data.ports as string[];
     } catch (err) {
-      setError('Failed to get ports: ' + String(err));
+      const errorMsg = 'Failed to get ports: ' + String(err);
+      console.error('❌', errorMsg, err);
+      setError(errorMsg);
       return [];
     }
   }, []);
 
   // Connect to port
   const connect = useCallback(async (port: string) => {
+    console.log('\n' + '='.repeat(60));
+    console.log('🔗 CONNECTING TO PORT:', port);
+    console.log('='.repeat(60));
+
     setIsLoading(true);
     setError(null);
+
     try {
+      console.log('📤 POST', `${API_BASE}/connect`, '| Body:', JSON.stringify({ port }));
+
       const response = await fetch(`${API_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port }),
       });
 
+      console.log('📥 Response Status:', response.status, response.statusText);
+      console.log('📝 Response Headers:', {
+        'content-type': response.headers.get('content-type'),
+      });
+
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errorMessage = errorData.detail || `Connection failed (${response.status})`;
+        const errorText = await response.text();
+        console.error('❌ ERROR Response Body:', errorText);
+
+        let errorMessage = `Connection failed (${response.status})`;
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.detail || errorMessage;
+        } catch (e) {
+          errorMessage = errorText || errorMessage;
+        }
+
+        console.error('❌ ERROR MESSAGE:', errorMessage);
         throw new Error(errorMessage);
       }
+
+      const responseData = await response.json();
+      console.log('✅ Connection Success:', responseData);
 
       setIsConnected(true);
 
       // Get initial machine state after successful connection
       try {
-        console.log('Fetching machine state from:', `${API_BASE}/status`);
+        console.log('\n🔄 LOADING MACHINE STATE...');
+        console.log('📤 GET', `${API_BASE}/status`);
+
         const statusResponse = await fetch(`${API_BASE}/status`);
-        console.log('Status response:', statusResponse.status, statusResponse.statusText);
+        console.log('📥 Status Response:', statusResponse.status, statusResponse.statusText);
 
         if (!statusResponse.ok) {
           const errorText = await statusResponse.text();
-          console.error('Status API error:', errorText);
+          console.error('❌ Status API Error:', errorText);
           throw new Error(`Status API returned ${statusResponse.status}`);
         }
 
         const responseText = await statusResponse.text();
-        console.log('Raw response:', responseText);
+        console.log('📦 Raw Response:', responseText);
 
         const state = JSON.parse(responseText);
-        console.log('Machine state loaded:', state);
+        console.log('✅ Machine State Loaded:', state);
 
         // Validate state has required fields
         if (state && typeof state === 'object') {
           setMachineState(state);
+          console.log('✅ STATE UPDATED');
         } else {
           throw new Error('Invalid state format');
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error('Failed to get initial status:', errorMsg, err);
+        console.error('⚠️ Failed to get initial status:', errorMsg, err);
         // Don't fail the connection just because status fetch failed
         setMachineState({
           preset_name: 'UNKNOWN',
@@ -103,9 +140,12 @@ export const useMachineController = () => {
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+      console.error('\n❌ CONNECTION ERROR:', errorMessage);
+      console.error('Full Error Object:', err);
+      console.log('='.repeat(60) + '\n');
+
       setError(errorMessage);
       setIsConnected(false);
-      console.error('Connection error:', err);
     } finally {
       setIsLoading(false);
     }

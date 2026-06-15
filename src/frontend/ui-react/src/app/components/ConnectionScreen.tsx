@@ -58,20 +58,30 @@ export default function ConnectionScreen({
   // Load WiFi interfaces on mount
   useEffect(() => {
     const loadWifiInterfaces = async () => {
+      console.log('🌐 LOADING WIFI INTERFACES...');
+      console.log('📤 GET http://127.0.0.1:8000/api/wifi-interfaces');
+
       try {
         const response = await fetch('http://127.0.0.1:8000/api/wifi-interfaces');
+        console.log('📥 Response:', response.status, response.statusText);
+
         const data = await response.json();
+        console.log('📦 Response Data:', data);
 
         if (data.interfaces && Array.isArray(data.interfaces)) {
+          console.log('✅ WiFi Interfaces Found:', data.interfaces);
+
           const formattedWifi: SerialPort[] = data.interfaces.map((interfaceName: string) => ({
             name: interfaceName,
             type: 'wifi' as const,
             status: 'available' as const,
           }));
           setWifiInterfaces(formattedWifi);
+        } else {
+          console.warn('⚠️ No interfaces in response');
         }
       } catch (err) {
-        console.error('Failed to load WiFi interfaces:', err);
+        console.error('❌ Failed to load WiFi interfaces:', err);
       } finally {
         setLoadingWifi(false);
       }
@@ -87,20 +97,44 @@ export default function ConnectionScreen({
   };
 
   const handleConnect = async () => {
-    if (!selectedPort) return;
+    console.log('\n' + '='.repeat(60));
+    console.log('🔌 CLICK CONNECT BUTTON');
+    console.log('Selected Port:', selectedPort);
+
+    if (!selectedPort) {
+      console.log('❌ No port selected!');
+      return;
+    }
+
+    console.log('📋 Available Serial Ports:', ports.map(p => p.name));
+    console.log('📡 Available WiFi Interfaces:', wifiInterfaces.map(w => w.name));
 
     // Check both ports and WiFi interfaces
     const port = ports.find(p => p.name === selectedPort) || wifiInterfaces.find(w => w.name === selectedPort);
-    if (!port || port.status !== 'available') return;
+
+    if (!port) {
+      console.error('❌ Port not found in either list!');
+      console.log('Looking for:', selectedPort);
+      return;
+    }
+
+    if (port.status !== 'available') {
+      console.error('❌ Port not available!', port.status);
+      return;
+    }
+
+    console.log('✅ Port Found:', { name: port.name, type: port.type, status: port.status });
 
     setIsConnecting(true);
     try {
-      console.log('Connecting to:', selectedPort);
+      console.log('\n📞 CALLING onConnect()');
       await onConnect(selectedPort);
+      console.log('✅ onConnect() completed successfully');
     } catch (err) {
-      console.error('Connection error:', err);
+      console.error('❌ Connection error:', err);
     } finally {
       setIsConnecting(false);
+      console.log('='.repeat(60) + '\n');
     }
   };
 
