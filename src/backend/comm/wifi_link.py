@@ -170,41 +170,80 @@ class WiFiLink:
         """
         Send command line to ESP8266 (compatibility with SerialLink).
 
-        Accepts both protocol format (S, H, M) and REST format (START, HOME, STOP).
-
-        Examples:
-        - "S" or "START" → START
-        - "H" or "HOME" → HOME
-        - "M" or "STOP" → STOP
-        - "R" or "HARD_RESET" → HARD_RESET
-        - "F50" → FREQUENCY with frequency=50
-        - "V75" → SPEED with speed=75
+        Accepts three formats:
+        - REST names: START, STOP, HOME, HARD_RESET, GET_STATUS
+        - Colon protocol (produced by protocol.py):
+            SET_FREQ:50.0  → FREQUENCY  frequency=50.0
+            SET_SPEED:75   → SPEED      speed=75
+            SET_FORCE:10.5 → FORCE      force=10.5
+        - Single-letter protocol: S, H, M, R, F50, V75
         """
-        command_str = command_str.strip().upper()
-
-        print(f"[WiFiLink] Parsing: {command_str}")
-
+        command_str = command_str.strip()
         if not command_str:
             return False
 
-        # Direct REST command names (from protocol.py)
-        rest_commands = {
-            'START': ('START', {}),
-            'STOP': ('STOP', {}),
-            'HOME': ('HOME', {}),
-            'HARD_RESET': ('HARD_RESET', {}),
-        }
+        upper = command_str.upper()
+        print(f"[WiFiLink] Parsing: {upper}")
 
-        # Check if it's a direct REST command first
-        if command_str in rest_commands:
-            rest_cmd, params = rest_commands[command_str]
-            return self.send_command(rest_cmd, **params)
+        # 1) Colon-delimited protocol commands (MUST be checked before the
+        #    single-letter fallback: "SET_FREQ:50" starts with 'S' and would
+        #    otherwise be mistaken for START).
+        if ":" in upper:
+            key, _, value = upper.partition(":")
+            key = key.strip()
+            value = value.strip()
 
-        # Fall back to protocol letter parsing
-        cmd_char = command_str[0] if command_str else ''
-        cmd_param = command_str[1:] if len(command_str) > 1 else ''
+            # Per-cell force: "SET_FORCE:<sensor>:<force>" (sensor 1-4)
+            if key == 'SET_FORCE' and ':' in value:
+                sensor_str, _, force_str = value.partition(":")
+                try:
+                    sensor = int(sensor_str.strip())
+                    force = float(force_str.strip()) if force_str.strip() else 0.0
+                except ValueError:
+                    sensor, force = 1, 0.0
+                return self.send_command('FORCE', force=force, sensor=sensor)
 
-        # Map protocol single-letter commands to REST commands
+            # Start with cycle timestamp: "START:<epoch_ms>"
+            # Sent as a string so the ESP echoes the exact digits (no float parsing).
+            if key == 'START':
+                return self.send_command('START', start_time=value)
+
+            # Goto: "GOTO:<table>:<position>"
+            if key == 'GOTO' and ':' in value:
+                table_str, _, pos_str = value.partition(":")
+                try:
+                    table = int(table_str.strip())
+                    position = float(pos_str.strip()) if pos_str.strip() else 0.0
+                except ValueError:
+                    table, position = 1, 0.0
+                return self.send_command('GOTO', position=position, table=table)
+
+            # name -> (REST command, json field, value caster)
+            colon_map = {
+                'SET_FREQ': ('FREQUENCY', 'frequency', float),
+                'SET_FREQUENCY': ('FREQUENCY', 'frequency', float),
+                'SET_SPEED': ('SPEED', 'speed', int),
+                'SET_FORCE': ('FORCE', 'force', float),
+            }
+
+            if key in colon_map:
+                rest_cmd, field, caster = colon_map[key]
+                try:
+                    param = caster(value) if value else 0
+                except ValueError:
+                    param = 0
+                return self.send_command(rest_cmd, **{field: param})
+
+        # 2) Direct REST command names (no parameter)
+        rest_commands = {'START', 'STOP', 'HOME', 'HARD_RESET', 'STATUS'}
+        if upper in rest_commands:
+            return self.send_command(upper)
+        if upper == 'GET_STATUS':
+            return self.send_command('STATUS')
+
+        # 3) Fall back to single-letter protocol parsing
+        cmd_char = upper[0]
+        cmd_param = upper[1:]
         protocol_map = {
             'H': ('HOME', {}),
             'S': ('START', {}),
@@ -218,7 +257,7 @@ class WiFiLink:
             rest_cmd, params = protocol_map[cmd_char]
             return self.send_command(rest_cmd, **params)
 
-        print(f"[WiFiLink] Unknown command: {command_str}")
+        print(f"[WiFiLink] Unknown command: {upper}")
         return False
 
     def write(self, data: str) -> bool:

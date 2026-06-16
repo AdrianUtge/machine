@@ -6,6 +6,9 @@ export interface MachineState {
   preset_name: string;
   frequency_hz: number | null;
   t_speed_percent: number;
+  force_target?: number | null;
+  force_targets?: number[];
+  cycle_start?: number | null;  // epoch ms, start of the running cycle
   positions: number[];  // 4 table positions
   sensors: number[];    // 4 force sensors
   motor_current: string | null;
@@ -19,6 +22,14 @@ export interface SerialLog {
   message: string;
 }
 
+export interface CustomPreset {
+  frequency: number;
+  force: number;
+  forces?: number[];  // per-cell forces (4 sensors), optional
+}
+
+export type CustomPresets = Record<string, CustomPreset>;
+
 const STATUS_REQUEST_TIMEOUT = 3000; // 3 seconds - if no data, request status
 
 export const useMachineController = () => {
@@ -28,7 +39,14 @@ export const useMachineController = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastLogCount, setLastLogCount] = useState(0);
+  const [customPresets, setCustomPresets] = useState<CustomPresets>({});
+  const [connectedSince, setConnectedSince] = useState<number | null>(null);
   const lastLogTimeRef = useRef<number>(Date.now());
+
+  // Track connection start time for runtime display
+  useEffect(() => {
+    setConnectedSince(isConnected ? Date.now() : null);
+  }, [isConnected]);
 
   // Get available ports
   const getAvailablePorts = useCallback(async () => {
@@ -228,6 +246,17 @@ export const useMachineController = () => {
     [sendCommand]
   );
 
+  // sensor: undefined/null = global (4 cells), 1-4 = per-cell
+  const setForce = useCallback((force: number, sensor?: number | null) =>
+    sendCommand('/command/force', sensor ? { force, sensor } : { force }),
+    [sendCommand]
+  );
+
+  const goto = useCallback((table: number, position: number) =>
+    sendCommand('/command/goto', { table, position }),
+    [sendCommand]
+  );
+
   const applyPreset = useCallback((preset: string) =>
     sendCommand('/command/preset', { preset }),
     [sendCommand]
@@ -237,6 +266,86 @@ export const useMachineController = () => {
     sendCommand('/command/manual', { command }),
     [sendCommand]
   );
+
+  // --- Custom presets (frequency + force), persisted server-side ---------
+
+  const loadPresets = useCallback(async () => {
+    try {
+      const response = await fetch(`${API_BASE}/presets`);
+      if (response.ok) {
+        const data = await response.json();
+        setCustomPresets(data.presets || {});
+        return data.presets as CustomPresets;
+      }
+    } catch (err) {
+      console.error('Failed to load presets:', err);
+    }
+    return {} as CustomPresets;
+  }, []);
+
+  const savePreset = useCallback(async (name: string, frequency: number, force: number, forces?: number[]) => {
+    try {
+      const response = await fetch(`${API_BASE}/presets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(forces ? { name, frequency, force, forces } : { name, frequency, force }),
+      });
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(err);
+      }
+      const data = await response.json();
+      setCustomPresets(data.presets || {});
+      return true;
+    } catch (err) {
+      setError('Failed to save preset: ' + String(err));
+      return false;
+    }
+  }, []);
+
+  const deletePreset = useCallback(async (name: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/presets/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setCustomPresets(data.presets || {});
+      }
+    } catch (err) {
+      setError('Failed to delete preset: ' + String(err));
+    }
+  }, []);
+
+  const applyCustomPreset = useCallback(async (name: string) => {
+    if (!isConnected) {
+      setError('Not connected');
+      return null;
+    }
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/presets/${encodeURIComponent(name)}/apply`, {
+        method: 'POST',
+      });
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(err);
+      }
+      const data = await response.json();
+      setMachineState(data.state || data);
+      return data;
+    } catch (err) {
+      setError('Failed to apply preset: ' + String(err));
+      return null;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isConnected]);
+
+  // Load saved presets once on mount (independent of connection)
+  useEffect(() => {
+    loadPresets();
+  }, [loadPresets]);
 
   // Refresh logs
   const refreshLogs = useCallback(async () => {
@@ -296,6 +405,7 @@ export const useMachineController = () => {
   return {
     // State
     isConnected,
+    connectedSince,
     machineState,
     logs,
     isLoading,
@@ -314,8 +424,17 @@ export const useMachineController = () => {
     hardReset,
     setFrequency,
     setSpeed,
+    setForce,
+    goto,
     applyPreset,
     sendManualCommand,
+
+    // Custom presets (frequency + force)
+    customPresets,
+    loadPresets,
+    savePreset,
+    deletePreset,
+    applyCustomPreset,
 
     // Utils
     refreshLogs,

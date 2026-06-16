@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, SlidersHorizontal } from 'lucide-react';
 import ConnectionScreen from './components/ConnectionScreen';
 import MotionControl from './components/MotionControl';
 import StatusPanelSimple from './components/StatusPanelSimple';
@@ -28,9 +28,12 @@ export default function App() {
     start,
     stop,
     setFrequency,
-    setSpeed,
-    applyPreset,
+    setForce,
+    goto,
     sendManualCommand,
+    customPresets,
+    savePreset,
+    deletePreset,
     refreshLogs,
   } = useMachineController();
 
@@ -39,9 +42,10 @@ export default function App() {
   const [portsError, setPortsError] = useState<string | null>(null);
   const [showConnection, setShowConnection] = useState(true);
   const [serialLogs, setSerialLogs] = useState<SerialLog[]>([]);
-  const [selectedPreset, setSelectedPreset] = useState('custom');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [selectedSensorIdx, setSelectedSensorIdx] = useState<number | null>(null);
+  const [advanced, setAdvanced] = useState(false);
+  const [selectedSensors, setSelectedSensors] = useState<number[]>([]);
 
   // Load available ports on mount and when needed
   useEffect(() => {
@@ -86,24 +90,16 @@ export default function App() {
   const handleConnect = async (port: string) => {
     setConnectionError(null);
     try {
-      console.log('🔗 Connecting to:', port);
       await connect(port);
-      console.log('✅ Connected successfully');
-      // Connection will update isConnected state
-      // We'll proceed to main screen after connection success
       setTimeout(() => {
-        // Give time for state to update
         if (error) {
-          console.log('⚠️ Error from hook:', error);
           setConnectionError(error);
         } else {
-          console.log('✅ No errors, showing main screen');
           setShowConnection(false);
         }
       }, 100);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to connect';
-      console.log('❌ Connection failed:', errorMsg);
       setConnectionError(errorMsg);
       console.error('Connection error:', err);
     }
@@ -116,12 +112,21 @@ export default function App() {
 
   const handleFrequencyChange = (freq: number) => {
     setFrequency(freq);
-    setSelectedPreset('custom');
   };
 
-  const handlePresetChange = (presetKey: string) => {
-    setSelectedPreset(presetKey);
-    applyPreset(presetKey);
+  // sensor: undefined = global (4 cells), 1-4 = per-cell
+  const handleForceChange = (force: number, sensor?: number) => {
+    setForce(force, sensor);
+  };
+
+  const toggleSensor = (idx: number) => {
+    setSelectedSensors((prev) =>
+      prev.includes(idx) ? prev.filter((i) => i !== idx) : [...prev, idx].sort()
+    );
+  };
+
+  const handleGoto = (table: number, position: number) => {
+    goto(table, position);
   };
 
   const handleCommand = (command: string) => {
@@ -129,8 +134,6 @@ export default function App() {
     else if (command === 'START') start();
     else if (command === 'STOP') stop();
   };
-
-  console.log('App state:', { showConnection, isConnected, machineState });
 
   if (showConnection) {
     return (
@@ -144,7 +147,7 @@ export default function App() {
   }
 
   return (
-    <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white p-6">
       {/* Header */}
       <div className="mb-6 flex justify-between items-center">
         <div>
@@ -152,19 +155,11 @@ export default function App() {
           <p className="text-slate-400">Machine Control Interface</p>
         </div>
 
-        {/* Connection Status */}
+        {/* Connection Status + controls */}
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-lg">
-            <div
-              className={`w-2 h-2 rounded-full ${
-                isConnected ? 'bg-green-500' : 'bg-red-500'
-              }`}
-            ></div>
-            <span
-              className={`font-semibold ${
-                isConnected ? 'text-green-500' : 'text-red-500'
-              }`}
-            >
+            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
+            <span className={`font-semibold ${isConnected ? 'text-green-500' : 'text-red-500'}`}>
               {isConnected ? 'Connected' : 'Disconnected'}
             </span>
           </div>
@@ -176,6 +171,18 @@ export default function App() {
             </div>
           )}
 
+          {/* Advanced toggle */}
+          <button
+            onClick={() => setAdvanced((v) => !v)}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors font-semibold ${
+              advanced ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-700 hover:bg-slate-600'
+            }`}
+            title="Toggle advanced mode (serial monitor + per-cell force)"
+          >
+            <SlidersHorizontal size={18} />
+            Advanced {advanced ? 'ON' : 'OFF'}
+          </button>
+
           <button
             onClick={handleDisconnect}
             className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg transition-colors font-semibold"
@@ -185,27 +192,20 @@ export default function App() {
         </div>
       </div>
 
-      {/* Debug Info */}
-      <div className="mb-6 p-4 bg-slate-800 rounded-lg text-sm">
-        <p className="text-slate-300">Connected: {isConnected ? 'Yes' : 'No'}</p>
-        <p className="text-slate-300">Machine Status: {machineState?.machine_status || 'N/A'}</p>
-        <p className="text-slate-300">Frequency: {machineState?.frequency_hz || 0} Hz</p>
-      </div>
-
-      {/* Main Content */}
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+      {/* Main Content - fills the page (taller when serial monitor is hidden) */}
+      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 flex-1">
         {/* Status Panel */}
-        <div className="xl:col-span-1">
+        <div className="xl:col-span-1 flex flex-col">
           <StatusPanelSimple
             isConnected={isConnected}
             machineState={machineState}
-            onCommand={handleCommand}
+            customPresets={customPresets}
           />
         </div>
 
         {/* Motion Control or Force Graph */}
-        <div className="xl:col-span-2 space-y-6">
-          <div className="bg-slate-800 rounded-lg p-6">
+        <div className="xl:col-span-2 flex flex-col">
+          <div className="bg-slate-800 rounded-lg p-6 flex-1">
             {selectedSensorIdx !== null && machineState ? (
               <ForceGraph
                 sensorIdx={selectedSensorIdx}
@@ -222,12 +222,19 @@ export default function App() {
                   <MotionControl
                     frequency={machineState?.frequency_hz || 0}
                     onChange={handleFrequencyChange}
+                    forceTarget={machineState?.force_target ?? 0}
+                    forceTargets={machineState?.force_targets ?? [0, 0, 0, 0]}
+                    onForceChange={handleForceChange}
                     isConnected={isConnected}
-                    selectedPreset={selectedPreset}
-                    onPresetChange={handlePresetChange}
                     onCommand={handleCommand}
-                    machineState={machineState?.machine_status || 'DISCONNECTED'}
+                    machineState={(machineState?.machine_status as any) || 'DISCONNECTED'}
                     pendingCommands={{}}
+                    customPresets={customPresets}
+                    onSavePreset={savePreset}
+                    onDeletePreset={deletePreset}
+                    advanced={advanced}
+                    selectedSensors={selectedSensors}
+                    onToggleSensor={toggleSensor}
                   />
                 ) : (
                   <div className="text-slate-400">Loading motion control...</div>
@@ -244,8 +251,9 @@ export default function App() {
               positions={machineState?.positions || [0, 0, 0, 0]}
               sensors={machineState?.sensors || [0, 0, 0, 0]}
               isConnected={isConnected}
-              onGotoCommand={(position) => handleCommand(`GOTO:${position}`)}
-              onSensorSelect={(sensorIdx) => setSelectedSensorIdx(sensorIdx)}
+              onGotoCommand={handleGoto}
+              graphSensorIdx={selectedSensorIdx}
+              onSensorSelect={setSelectedSensorIdx}
             />
           ) : (
             <div className="text-slate-400">Loading sensors...</div>
@@ -253,16 +261,18 @@ export default function App() {
         </div>
       </div>
 
-      {/* Serial Monitor */}
-      <div className="mt-6">
-        <SerialMonitor
-          logs={serialLogs}
-          onClear={() => setSerialLogs([])}
-          onSendCommand={sendManualCommand}
-          onRefreshLogs={refreshLogs}
-          isLoading={isLoading}
-        />
-      </div>
+      {/* Serial Monitor - advanced only */}
+      {advanced && (
+        <div className="mt-6">
+          <SerialMonitor
+            logs={serialLogs}
+            onClear={() => setSerialLogs([])}
+            onSendCommand={sendManualCommand}
+            onRefreshLogs={refreshLogs}
+            isLoading={isLoading}
+          />
+        </div>
+      )}
     </div>
   );
 }

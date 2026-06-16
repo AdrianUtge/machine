@@ -11,8 +11,12 @@ def cmd_home() -> str:
     return "HOME"
 
 
-def cmd_start() -> str:
-    return "START"
+def cmd_start(start_time: int | None = None) -> str:
+    # Au START on envoie l'heure de début de cycle (epoch ms) au node,
+    # qui la mémorise et la renvoie ensuite: "START:<epoch_ms>".
+    if start_time is None:
+        return "START"
+    return f"START:{start_time}"
 
 
 def cmd_hard_reset() -> str:
@@ -27,8 +31,21 @@ def cmd_set_speed(speed_percent: int) -> str:
     return f"SET_SPEED:{speed_percent}"
 
 
+def cmd_set_force(force_n: float, sensor: int | None = None) -> str:
+    # Global (4 capteurs): "SET_FORCE:<force>"
+    # Par cellule (capteur 1-4): "SET_FORCE:<sensor>:<force>"
+    if sensor is None:
+        return f"SET_FORCE:{force_n}"
+    return f"SET_FORCE:{sensor}:{force_n}"
+
+
 def cmd_get_status() -> str:
     return "GET_STATUS"
+
+
+def cmd_goto(table: int, position: float) -> str:
+    # Déplacer une table (1-4) à une position (mm): "GOTO:<table>:<position>"
+    return f"GOTO:{table}:{position}"
 
 
 # --- Parsing -------------------------------------------------------------

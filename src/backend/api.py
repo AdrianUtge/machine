@@ -17,6 +17,7 @@ from comm.wifi_link import WiFiLink
 from config import DEFAULT_BAUDRATE, DEFAULT_PORT, DEFAULT_TIMEOUT
 from core.controller import MachineController
 from core.state import MachineState
+from core import preset_store
 from debug.logger import DebugLogger
 from comm.ports import choose_serial_port
 import sys
@@ -45,19 +46,36 @@ class FrequencyRequest(BaseModel):
 class SpeedRequest(BaseModel):
     speed: int
 
+class ForceRequest(BaseModel):
+    force: float
+    sensor: Optional[int] = None  # None = global (4 capteurs), 1-4 = par cellule
+
+class GotoRequest(BaseModel):
+    table: int      # table 1-4
+    position: float  # mm
+
 class PresetRequest(BaseModel):
     preset: str
+
+class CustomPreset(BaseModel):
+    name: str
+    frequency: float
+    force: float
+    forces: Optional[list[float]] = None  # forces par cellule (4 capteurs)
 
 class MachineStateResponse(BaseModel):
     preset_name: str
     frequency_hz: Optional[float]
     t_speed_percent: int
-    position: Optional[str]
+    force_target: Optional[float]
+    force_targets: list[float]
+    positions: list[float]
+    sensors: list[float]
     motor_current: Optional[str]
-    force_sensor: Optional[str]
     errors: str
     slave_status: str
     machine_status: str
+    cycle_start: Optional[int]  # epoch ms du début de cycle (None = pas démarré)
 
 class SerialLogEntry(BaseModel):
     type: str
@@ -153,12 +171,15 @@ def get_state_dict(state: MachineState) -> MachineStateResponse:
         preset_name=state.preset_name,
         frequency_hz=state.frequency_hz,
         t_speed_percent=state.t_speed_percent,
-        position=state.position,
+        force_target=state.force_target,
+        force_targets=state.force_targets,
+        positions=state.positions,
+        sensors=state.sensors,
         motor_current=state.motor_current,
-        force_sensor=state.force_sensor,
         errors=state.errors,
         slave_status=state.slave_status,
         machine_status=state.machine_status,
+        cycle_start=state.cycle_start,
     )
 
 # --- Connection Endpoints -------------------------------------------
@@ -252,6 +273,19 @@ async def connect(request: ConnectRequest):
                 state = MachineState()
                 logger = DebugLogger()
                 controller = MachineController(wifi_link, state, logger)
+                # WiFi link is already verified above; mark the state connected
+                # (the serial path does this via controller.connect()).
+                controller.state.machine_status = "CONNECTED"
+
+                # Restore the cycle start time from the node, so the runtime
+                # survives a frontend reload / reconnect (the node remembers it).
+                try:
+                    esp_status = wifi_link.get_status()
+                    if esp_status:
+                        cs = int(float(esp_status.get("cycle_start", 0) or 0))
+                        controller.state.cycle_start = cs if cs > 0 else None
+                except Exception as e:
+                    print(f"[WiFi] Could not read cycle_start from node: {e}")
 
                 log_action("state", f"Connected via WiFi to {ip}:{port}")
                 print(f"[WiFi] MachineController initialized\n")
@@ -410,6 +444,33 @@ async def set_speed(request: SpeedRequest):
 
     return {"success": True, "state": get_state_dict(controller.state)}
 
+@app.post("/api/command/force")
+async def set_force(request: ForceRequest):
+    """Set force target (N)."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    controller.set_force(request.force, request.sensor)
+    if request.sensor is None:
+        log_action("command", f"SET_FORCE:{request.force}")
+    else:
+        log_action("command", f"SET_FORCE[cell {request.sensor}]:{request.force}")
+    _read_all_responses()
+
+    return {"success": True, "state": get_state_dict(controller.state)}
+
+@app.post("/api/command/goto")
+async def goto(request: GotoRequest):
+    """Move a table (1-4) to a position (mm)."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    controller.goto(request.table, request.position)
+    log_action("command", f"GOTO table {request.table} -> {request.position} mm")
+    _read_all_responses()
+
+    return {"success": True, "state": get_state_dict(controller.state)}
+
 @app.post("/api/command/preset")
 async def apply_preset(request: PresetRequest):
     """Apply frequency preset."""
@@ -441,6 +502,54 @@ async def send_manual_command(request: dict):
     _read_all_responses()  # Read all responses just like other commands
 
     return {"success": True, "state": get_state_dict(controller.state)}
+
+# --- Custom Presets (persisted in preset.json) ----------------------
+
+@app.get("/api/presets")
+async def list_presets():
+    """List all saved custom presets (frequency + force couples)."""
+    return {"presets": preset_store.load_presets()}
+
+@app.post("/api/presets")
+async def save_custom_preset(preset: CustomPreset):
+    """Create or update a custom preset. Persisted to preset.json."""
+    name = preset.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Preset name is required")
+
+    presets = preset_store.set_preset(name, preset.frequency, preset.force, preset.forces)
+    log_action("state", f"Preset saved: {name} ({preset.frequency} Hz / {preset.force} N)")
+    return {"success": True, "presets": presets}
+
+@app.delete("/api/presets/{name}")
+async def remove_custom_preset(name: str):
+    """Delete a custom preset. Persisted to preset.json."""
+    presets = preset_store.delete_preset(name)
+    log_action("state", f"Preset deleted: {name}")
+    return {"success": True, "presets": presets}
+
+@app.post("/api/presets/{name}/apply")
+async def apply_custom_preset(name: str):
+    """Apply a custom preset: send its frequency and force to the node."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    presets = preset_store.load_presets()
+    if name not in presets:
+        raise HTTPException(status_code=404, detail=f"Preset '{name}' not found")
+
+    p = presets[name]
+    controller.set_frequency(p["frequency"])
+    controller.set_force(p["force"])
+    controller.state.preset_name = name
+    log_action("command", f"PRESET {name}: {p['frequency']} Hz / {p['force']} N")
+    _read_all_responses()
+
+    return {
+        "success": True,
+        "preset": {"name": name, **p},
+        "state": get_state_dict(controller.state),
+    }
 
 # --- Monitoring Endpoints -------------------------------------------
 

@@ -53,6 +53,9 @@ yarn-error.log*
 .env
 *.log
 
+# Runtime data (user presets are created/edited at runtime, not versioned)
+src/backend/preset.json
+
 # Configuration files with sensitive data
 config/setup.json
 config/logs/

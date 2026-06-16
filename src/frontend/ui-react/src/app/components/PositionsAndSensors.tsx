@@ -5,8 +5,9 @@ interface PositionsAndSensorsProps {
   positions: number[];  // 4 positions
   sensors: number[];    // 4 force sensors
   isConnected: boolean;
-  onGotoCommand?: (position: number) => void;
-  onSensorSelect?: (sensorIdx: number) => void;
+  onGotoCommand?: (table: number, position: number) => void;  // table 1-4, position mm
+  graphSensorIdx?: number | null;           // sensor currently shown in the graph (controlled by parent)
+  onSensorSelect?: (sensorIdx: number | null) => void;        // null = close/deselect the graph
 }
 
 export default function PositionsAndSensors({
@@ -14,11 +15,12 @@ export default function PositionsAndSensors({
   sensors = [0, 0, 0, 0],
   isConnected = false,
   onGotoCommand,
+  graphSensorIdx = null,
   onSensorSelect
 }: PositionsAndSensorsProps) {
   const [selectedTableIdx, setSelectedTableIdx] = useState<number | null>(null);
-  const [selectedSensorIdx, setSelectedSensorIdx] = useState<number | null>(null);
-  const [gotoPosition, setGotoPosition] = useState(0);
+  // Kept as a raw string so the field can be fully cleared (no stuck "0").
+  const [gotoPosition, setGotoPosition] = useState('0');
 
   // Ensure we have 4 values
   const pos = [...positions].slice(0, 4).concat(Array(4).fill(0)).slice(0, 4);
@@ -26,24 +28,27 @@ export default function PositionsAndSensors({
 
   const handleTableClick = (idx: number) => {
     setSelectedTableIdx(idx);
-    setGotoPosition(pos[idx]);
+    setGotoPosition(String(pos[idx]));
   };
 
   const handleSensorClick = (idx: number) => {
-    setSelectedSensorIdx(idx);
+    // The right panel always controls the force graph (in normal AND advanced mode).
+    // Per-cell force selection is done only in the Per-cell Force panel.
+    // Click again to close -> no red ring left over.
     if (onSensorSelect) {
-      onSensorSelect(idx);
+      onSensorSelect(graphSensorIdx === idx ? null : idx);
     }
   };
 
   const handleGotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newValue = parseFloat(e.target.value) || 0;
-    setGotoPosition(Math.min(newValue, 96)); // Max 96mm
+    // Keep the raw text so the user can clear the field; clamp on send.
+    setGotoPosition(e.target.value);
   };
 
   const handleGotoSend = () => {
-    if (onGotoCommand) {
-      onGotoCommand(gotoPosition);
+    if (onGotoCommand && selectedTableIdx !== null) {
+      const p = Math.min(Math.max(parseFloat(gotoPosition) || 0, 0), 96);  // clamp 0..96 mm
+      onGotoCommand(selectedTableIdx + 1, p);  // table is 1-indexed on the wire
     }
   };
 
@@ -75,12 +80,12 @@ export default function PositionsAndSensors({
               </div>
             </button>
 
-            {/* Sensor - Clickable to show graph */}
+            {/* Sensor - click to show graph (normal) or select for per-cell force (advanced) */}
             <button
               onClick={() => handleSensorClick(idx)}
               disabled={!isConnected}
               className={`rounded p-2 transition-all text-left flex-1 ${
-                selectedSensorIdx === idx
+                graphSensorIdx === idx
                   ? 'bg-red-600 ring-2 ring-red-400'
                   : 'bg-slate-800 hover:bg-slate-700'
               } disabled:opacity-50 disabled:cursor-not-allowed`}
@@ -105,7 +110,7 @@ export default function PositionsAndSensors({
         <div className="flex items-center gap-2 mb-2">
           <Move className="w-4 h-4 text-purple-400" />
           <h3 className="text-sm font-semibold text-slate-200">
-            GOTO {selectedTableIdx !== null ? `T${selectedTableIdx + 1}` : ''}
+            GOTO {selectedTableIdx !== null ? `Table ${selectedTableIdx + 1}` : '— select a table'}
           </h3>
         </div>
         <div className="flex gap-2">
@@ -116,13 +121,13 @@ export default function PositionsAndSensors({
             step="0.1"
             value={gotoPosition}
             onChange={handleGotoChange}
-            disabled={!isConnected}
+            disabled={!isConnected || selectedTableIdx === null}
             className="flex-1 px-2 py-1 bg-slate-600 rounded border border-slate-500 focus:border-purple-500 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed font-mono text-xs"
           />
           <span className="px-2 py-1 bg-slate-800 rounded text-slate-400 text-xs">mm</span>
           <button
             onClick={handleGotoSend}
-            disabled={!isConnected}
+            disabled={!isConnected || selectedTableIdx === null}
             className="px-3 py-1 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-xs font-semibold"
           >
             Send

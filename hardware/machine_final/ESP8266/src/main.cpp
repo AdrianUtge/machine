@@ -31,7 +31,31 @@ struct SystemState {
     uint32_t uptime = 0;
     int rssi = 0;
     const char* version = "1.0.0-phase1";
+    // Heure de début de cycle (epoch ms, envoyée par le backend au START).
+    // Stockée en String pour renvoyer les chiffres exacts (pas de souci float).
+    String cycleStart = "0";
 } state;
+
+// ===== CORS: ajouter les en-têtes à TOUTES les réponses =====
+// Permet au front (navigateur) de joindre directement le NodeMCU.
+// Doit être appelé AVANT chaque server.send().
+void addCORSHeaders() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    server.sendHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    server.sendHeader("Access-Control-Max-Age", "600");
+}
+
+// ===== CORS: répondre aux requêtes préliminaires (preflight OPTIONS) =====
+// Le navigateur envoie un OPTIONS avant un POST avec en-têtes custom
+// (Authorization / Content-Type). On NE vérifie PAS le token ici :
+// les navigateurs n'envoient jamais l'Authorization dans le preflight.
+void handleCORSPreflight() {
+    addCORSHeaders();
+    server.send(204);  // No Content
+    Serial.print("[CORS] Preflight OPTIONS handled for: ");
+    Serial.println(server.uri());
+}
 
 // ===== Fonction auxiliaire: Vérifier le token Bearer =====
 bool verifyAuthToken() {
@@ -65,6 +89,8 @@ bool verifyAuthToken() {
 
 // ===== Endpoint: GET /api/status =====
 void handleStatus() {
+    addCORSHeaders();  // CORS sur toutes les réponses (succès comme erreur)
+
     if (!verifyAuthToken()) {
         server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
         return;
@@ -79,6 +105,7 @@ void handleStatus() {
     doc["rssi"] = WiFi.RSSI();
     doc["version"] = state.version;
     doc["ip"] = WiFi.localIP().toString();
+    doc["cycle_start"] = state.cycleStart;  // début de cycle mémorisé (echo)
 
     String response;
     serializeJson(doc, response);
@@ -89,24 +116,33 @@ void handleStatus() {
 
 // ===== Endpoint: POST /api/command =====
 void handleCommand() {
+    addCORSHeaders();  // CORS sur toutes les réponses (succès comme erreur)
+
     if (!verifyAuthToken()) {
         server.send(401, "application/json", "{\"error\":\"Unauthorized\"}");
         return;
     }
 
+    Serial.println("[REST] POST /api/command — auth OK, traitement de la commande");
+
     if (server.method() != HTTP_POST) {
+        Serial.println("[REST] ❌ Méthode non autorisée");
         server.send(405, "application/json", "{\"error\":\"Method not allowed\"}");
         return;
     }
 
-    if (!server.hasHeader("Content-Type")) {
-        server.send(400, "application/json", "{\"error\":\"Missing Content-Type\"}");
+    // NB: on ne teste PAS hasHeader("Content-Type") : l'ESP8266WebServer ne
+    // collecte par défaut que les en-têtes Authorization et ETag, donc ce test
+    // renvoyait toujours un 400 et la commande n'était jamais loggée.
+    String body = server.arg("plain");
+    Serial.print("[REST] Corps reçu: ");
+    Serial.println(body);
+
+    if (body.length() == 0) {
+        Serial.println("[REST] ❌ Corps vide (pas de JSON)");
+        server.send(400, "application/json", "{\"error\":\"Empty body\"}");
         return;
     }
-
-    String body = server.arg("plain");
-    Serial.print("[REST] Received JSON: ");
-    Serial.println(body);
 
     StaticJsonDocument<256> doc;
     DeserializationError error = deserializeJson(doc, body);
@@ -126,14 +162,15 @@ void handleCommand() {
     String command = doc["command"].as<String>();
     command.toUpperCase();
 
-    // Commands: START, STOP, HOME, FREQUENCY, SPEED, PRESET, MANUAL
+    // Commands: START, STOP, HOME, FREQUENCY, SPEED, FORCE, PRESET, MANUAL
     const char* validCommands[] = {
         "START", "STOP", "HOME", "HARD_RESET",
-        "FREQUENCY", "SPEED", "PRESET", "MANUAL", "STATUS"
+        "FREQUENCY", "SPEED", "FORCE", "GOTO", "PRESET", "MANUAL", "STATUS"
     };
+    const int validCommandsCount = sizeof(validCommands) / sizeof(validCommands[0]);
 
     bool isValid = false;
-    for (int i = 0; i < 9; i++) {
+    for (int i = 0; i < validCommandsCount; i++) {
         if (command == validCommands[i]) {
             isValid = true;
             break;
@@ -145,6 +182,14 @@ void handleCommand() {
         Serial.println(command);
         server.send(400, "application/json", "{\"error\":\"Unknown command\"}");
         return;
+    }
+
+    // Cycle start time: mémoriser au START (renvoyé ensuite dans /api/status),
+    // remettre à zéro au STOP / HARD_RESET.
+    if (command == "START" && doc.containsKey("start_time")) {
+        state.cycleStart = doc["start_time"].as<String>();
+    } else if (command == "STOP" || command == "HARD_RESET") {
+        state.cycleStart = "0";
     }
 
     // Log the command
@@ -166,6 +211,24 @@ void handleCommand() {
         Serial.print("║ Speed: ");
         Serial.print(doc["speed"].as<int>());
         Serial.println(" %");
+    }
+    if (doc.containsKey("force")) {
+        Serial.print("║ Force: ");
+        Serial.print(doc["force"].as<float>());
+        Serial.println(" N");
+    }
+    if (doc.containsKey("sensor")) {
+        Serial.print("║ Cell (sensor): ");
+        Serial.println(doc["sensor"].as<int>());
+    }
+    if (doc.containsKey("table")) {
+        Serial.print("║ Table: ");
+        Serial.println(doc["table"].as<int>());
+    }
+    if (doc.containsKey("position")) {
+        Serial.print("║ Position: ");
+        Serial.print(doc["position"].as<float>());
+        Serial.println(" mm");
     }
     if (doc.containsKey("preset")) {
         Serial.print("║ Preset: ");
@@ -200,6 +263,13 @@ void handleCommand() {
 
 // ===== Gestion des requêtes non trouvées =====
 void handleNotFound() {
+    // Répondre aux preflight CORS même sur des routes inconnues (filet de sécurité)
+    if (server.method() == HTTP_OPTIONS) {
+        handleCORSPreflight();
+        return;
+    }
+
+    addCORSHeaders();  // CORS aussi sur les 404
     Serial.print("[HTTP] 404 - Path: ");
     Serial.println(server.uri());
     server.send(404, "application/json",
@@ -235,7 +305,9 @@ bool setupWiFi() {
 // ===== Initialisation du serveur HTTP =====
 void setupServer() {
     server.on("/api/status", HTTP_GET, handleStatus);
+    server.on("/api/status", HTTP_OPTIONS, handleCORSPreflight);   // preflight CORS
     server.on("/api/command", HTTP_POST, handleCommand);
+    server.on("/api/command", HTTP_OPTIONS, handleCORSPreflight);  // preflight CORS
     server.onNotFound(handleNotFound);
 
     server.begin();
