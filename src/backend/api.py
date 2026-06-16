@@ -277,15 +277,35 @@ async def connect(request: ConnectRequest):
                 # (the serial path does this via controller.connect()).
                 controller.state.machine_status = "CONNECTED"
 
-                # Restore the cycle start time from the node, so the runtime
-                # survives a frontend reload / reconnect (the node remembers it).
+                # Restore what we were doing from the node, so a frontend reload /
+                # reconnect resumes the current state (the node remembers it).
                 try:
                     esp_status = wifi_link.get_status()
                     if esp_status:
+                        # Runtime (start of cycle)
                         cs = int(float(esp_status.get("cycle_start", 0) or 0))
                         controller.state.cycle_start = cs if cs > 0 else None
+
+                        # Frequency setpoint
+                        freq = esp_status.get("frequency")
+                        if freq is not None:
+                            controller.state.frequency_hz = float(freq)
+
+                        # Per-cell force setpoints (+ global force_target for display)
+                        forces = esp_status.get("forces")
+                        if isinstance(forces, list) and len(forces) >= 4:
+                            forces_f = [float(x) for x in forces[:4]]
+                            controller.state.force_targets = forces_f
+                            controller.state.force_target = (
+                                forces_f[0] if len(set(forces_f)) == 1 else max(forces_f)
+                            )
+
+                        print(f"[WiFi] Restored from node: "
+                              f"freq={controller.state.frequency_hz}, "
+                              f"forces={controller.state.force_targets}, "
+                              f"cycle_start={controller.state.cycle_start}")
                 except Exception as e:
-                    print(f"[WiFi] Could not read cycle_start from node: {e}")
+                    print(f"[WiFi] Could not restore state from node: {e}")
 
                 log_action("state", f"Connected via WiFi to {ip}:{port}")
                 print(f"[WiFi] MachineController initialized\n")

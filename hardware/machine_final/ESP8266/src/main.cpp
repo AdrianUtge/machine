@@ -34,6 +34,9 @@ struct SystemState {
     // Heure de début de cycle (epoch ms, envoyée par le backend au START).
     // Stockée en String pour renvoyer les chiffres exacts (pas de souci float).
     String cycleStart = "0";
+    // Dernières consignes mémorisées (réémises pour reprise après reload).
+    float frequency = 0.0f;          // Hz
+    float forces[4] = {0, 0, 0, 0};  // force par cellule (N)
 } state;
 
 // ===== CORS: ajouter les en-têtes à TOUTES les réponses =====
@@ -98,14 +101,17 @@ void handleStatus() {
 
     Serial.println("[REST] GET /api/status");
 
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<384> doc;
     doc["status"] = "ok";
     doc["command_count"] = state.commandCount;
     doc["uptime_ms"] = millis();
     doc["rssi"] = WiFi.RSSI();
     doc["version"] = state.version;
     doc["ip"] = WiFi.localIP().toString();
-    doc["cycle_start"] = state.cycleStart;  // début de cycle mémorisé (echo)
+    doc["cycle_start"] = state.cycleStart;   // début de cycle mémorisé (echo)
+    doc["frequency"] = state.frequency;      // consigne fréquence mémorisée
+    JsonArray forcesArr = doc.createNestedArray("forces");  // consignes force par cellule
+    for (int i = 0; i < 4; i++) forcesArr.add(state.forces[i]);
 
     String response;
     serializeJson(doc, response);
@@ -190,6 +196,20 @@ void handleCommand() {
         state.cycleStart = doc["start_time"].as<String>();
     } else if (command == "STOP" || command == "HARD_RESET") {
         state.cycleStart = "0";
+    }
+
+    // Mémoriser les consignes pour pouvoir les réémettre (reprise après reload)
+    if (command == "FREQUENCY" && doc.containsKey("frequency")) {
+        state.frequency = doc["frequency"].as<float>();
+    }
+    if (command == "FORCE" && doc.containsKey("force")) {
+        float f = doc["force"].as<float>();
+        if (doc.containsKey("sensor")) {
+            int s = doc["sensor"].as<int>();
+            if (s >= 1 && s <= 4) state.forces[s - 1] = f;
+        } else {
+            for (int i = 0; i < 4; i++) state.forces[i] = f;  // global = les 4
+        }
     }
 
     // Log the command
