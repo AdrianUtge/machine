@@ -18,7 +18,7 @@
 #define WIFI_PASSWORD "12345678"             // Mot de passe du réseau
 
 // ===== SÉCURITÉ =====
-#define AUTH_TOKEN "bearer_token_secret"     // Token pour API REST
+#define AUTH_TOKEN "1276371237612hj1h12387dsads8912"     // Token pour API REST
 
 // ===== SERVEUR =====
 #define HTTP_PORT 8080                       // Port du serveur HTTP

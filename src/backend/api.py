@@ -373,24 +373,24 @@ async def get_status():
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
 
-    # Read all available data from serial port
-    for _ in range(10):  # Read up to 10 lines
-        line = controller.read_once()
-        if not line:
-            break
+    # WiFi: actively request a fresh status from the OpenRB (the ESP relays it).
+    if isinstance(controller.link, WiFiLink):
+        controller.get_status()
 
+    _read_all_responses()
     return get_state_dict(controller.state)
 
 # --- Command Endpoints -----------------------------------------------
 
 def _read_all_responses():
-    """Helper to read all available responses from serial port."""
+    """Read & parse all available response lines, and log them for the monitor."""
     if not controller:
         return
-    for _ in range(20):  # Read up to 20 lines
+    for _ in range(40):  # Read up to 40 lines (a status burst = ~6 lines)
         line = controller.read_once()
         if not line:
             break
+        log_action("response", line)
 
 @app.post("/api/command/home")
 async def home():

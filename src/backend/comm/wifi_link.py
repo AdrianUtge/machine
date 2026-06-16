@@ -30,6 +30,9 @@ class WiFiLink:
         self.timeout = timeout
         self.base_url = f"http://{ip}:{port}"
         self.connected = False
+        # Lignes de réponse remontées par l'OpenRB (via l'ESP), FIFO.
+        # Alimentée par send_command(), consommée par read_line().
+        self._rx_lines: list[str] = []
 
     @property
     def headers(self) -> Dict[str, str]:
@@ -131,6 +134,16 @@ class WiFiLink:
             print(f"[WiFiLink] Response: {response.status_code}")
 
             if response.status_code == 200:
+                # L'ESP renvoie les lignes de réponse remontées par l'OpenRB.
+                # On les met en file pour read_line() -> parse_response().
+                try:
+                    data = response.json()
+                    for ln in data.get("lines", []):
+                        if ln:
+                            self._rx_lines.append(str(ln))
+                            print(f"[WiFiLink] < {ln}")
+                except Exception as e:
+                    print(f"[WiFiLink] (no lines parsed: {e})")
                 print(f"[WiFiLink] ✅ Command '{command}' sent successfully")
                 logger.debug(f"Command '{command}' sent successfully")
                 return True
@@ -272,21 +285,16 @@ class WiFiLink:
 
     def read_line(self, timeout: Optional[float] = None) -> Optional[str]:
         """
-        Read response from ESP8266 (compatibility with SerialLink).
+        Read one response line relayed from the OpenRB-150 (via the ESP8266).
 
-        For Phase 1, WiFi doesn't need to read responses line-by-line
-        like serial does. Commands are sent and ESP8266 logs them.
+        Phase 2: send_command() buffers the lines returned by the ESP
+        (STATE/FREQ/POSITION/FORCE/SLAVE/ACK/...). read_line() pops them
+        FIFO so MachineController.read_once() can parse_response() them.
 
-        Returns None to indicate no data to parse.
-
-        Args:
-            timeout: Read timeout (ignored)
-
-        Returns:
-            None (no line-by-line responses for WiFi)
+        Returns the next buffered line, or None when the buffer is empty.
         """
-        # Phase 1: Don't try to parse WiFi responses as serial protocol
-        # The ESP8266 logs commands to its USB serial, that's enough
+        if self._rx_lines:
+            return self._rx_lines.pop(0)
         return None
 
     def readline(self, timeout: Optional[float] = None) -> Optional[str]:

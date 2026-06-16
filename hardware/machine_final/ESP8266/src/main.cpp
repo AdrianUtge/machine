@@ -17,10 +17,17 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ArduinoJson.h>
+#include <SoftwareSerial.h>
 #include "config.h"
 
 // ===== Hardware =====
 static const uint8_t PIN_LED = D4;      // GPIO2 = LED intégrée (actif bas)
+
+// ===== Lien série vers l'OpenRB-150 =====
+// ESP TX = GPIO12 (D6) -> OpenRB Serial3 RX (D13)
+// ESP RX = GPIO14 (D5) <- OpenRB Serial3 TX (D14)
+#define OPENRB_BAUD 19200               // baud modéré = SoftwareSerial fiable malgré le WiFi
+SoftwareSerial openrb(14 /*RX=GPIO14*/, 12 /*TX=GPIO12*/);
 
 // ===== Serveur Web =====
 ESP8266WebServer server(HTTP_PORT);
@@ -118,6 +125,57 @@ void handleStatus() {
     server.send(200, "application/json", response);
 
     Serial.println("[REST] Status sent");
+}
+
+// ===== OpenRB-150 : mapping commande JSON -> protocole ligne =====
+String buildOpenRbLine(JsonDocument& doc, const String& cmd) {
+    if (cmd == "FREQUENCY") return "SET_FREQ:" + String(doc["frequency"].as<float>(), 3);
+    if (cmd == "SPEED")     return "SET_SPEED:" + String(doc["speed"].as<int>());
+    if (cmd == "FORCE") {
+        float f = doc["force"].as<float>();
+        if (doc.containsKey("sensor"))
+            return "SET_FORCE:" + String(doc["sensor"].as<int>()) + ":" + String(f, 3);
+        return "SET_FORCE:" + String(f, 3);
+    }
+    if (cmd == "GOTO")
+        return "GOTO:" + String(doc["table"].as<int>()) + ":" + String(doc["position"].as<float>(), 3);
+    if (cmd == "STATUS")    return "GET_STATUS";
+    // START / STOP / HOME / HARD_RESET (et fallback) : commande telle quelle
+    return cmd;
+}
+
+// ===== OpenRB-150 : envoyer une ligne et collecter les réponses =====
+void forwardToOpenRB(const String& line, JsonArray& outLines) {
+    while (openrb.available()) openrb.read();   // vider les données obsolètes
+    openrb.print(line);
+    openrb.print('\n');
+    Serial.print("[OpenRB] > ");
+    Serial.println(line);
+
+    unsigned long startMs  = millis();
+    unsigned long lastByte = millis();
+    String buf = "";
+
+    // Fenêtre max 500 ms ; on s'arrête après 80 ms de silence une fois des lignes reçues
+    while (millis() - startMs < 500) {
+        while (openrb.available()) {
+            char c = (char)openrb.read();
+            lastByte = millis();
+            if (c == '\n' || c == '\r') {
+                if (buf.length()) {
+                    outLines.add(buf);
+                    Serial.print("[OpenRB] < ");
+                    Serial.println(buf);
+                    buf = "";
+                }
+            } else if (buf.length() < 120) {
+                buf += c;
+            }
+        }
+        if (outLines.size() > 0 && (millis() - lastByte) > 80) break;
+        yield();
+    }
+    if (buf.length()) outLines.add(buf);
 }
 
 // ===== Endpoint: POST /api/command =====
@@ -264,15 +322,15 @@ void handleCommand() {
     Serial.println(" ms");
     Serial.println("╚════════════════════════════════════════╝\n");
 
-    // TODO: Phase 2 - Envoyer à l'OpenRB via UART
-    // Pour l'instant, juste logger
-
-    // Répondre avec succès
-    StaticJsonDocument<256> response;
+    // Phase 2 : transmettre à l'OpenRB-150 et collecter ses réponses
+    StaticJsonDocument<768> response;
     response["result"] = "success";
     response["command"] = command;
-    response["timestamp"] = millis();
     response["command_number"] = state.commandCount;
+
+    String line = buildOpenRbLine(doc, command);
+    JsonArray lines = response.createNestedArray("lines");
+    forwardToOpenRB(line, lines);
 
     String responseStr;
     serializeJson(response, responseStr);
@@ -348,6 +406,12 @@ void setup() {
     // Initialiser LED
     pinMode(PIN_LED, OUTPUT);
     digitalWrite(PIN_LED, HIGH);   // LED off (actif bas)
+
+    // Lien série vers l'OpenRB-150
+    openrb.begin(OPENRB_BAUD);
+    Serial.print("[OpenRB] SoftwareSerial @ ");
+    Serial.print(OPENRB_BAUD);
+    Serial.println(" baud (RX=GPIO14, TX=GPIO12)");
 
     // WiFi
     if (!setupWiFi()) {
