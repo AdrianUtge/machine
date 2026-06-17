@@ -380,17 +380,56 @@ def disconnect():
     log_action("state", "Disconnected")
     return {"success": True, "message": "Disconnected"}
 
+def _apply_esp_live_status(state: MachineState, esp: dict) -> None:
+    """Map the OpenRB live cache (relayed by the ESP) into the machine state.
+
+    Plus aucun aller-retour série : l'OpenRB streame son statut en burst, l'ESP
+    le cache, et GET /api/status renvoie ce cache instantanément.
+    """
+    rb_state = esp.get("rb_state")
+    if rb_state and rb_state != "UNKNOWN":
+        state.machine_status = rb_state
+
+    rb_freq = esp.get("rb_frequency")
+    if rb_freq is not None:
+        try:
+            state.frequency_hz = float(rb_freq)
+        except (TypeError, ValueError):
+            pass
+
+    positions = esp.get("positions")
+    if isinstance(positions, list) and positions:
+        state.positions = [float(p) for p in positions[:4]]
+        while len(state.positions) < 4:
+            state.positions.append(0.0)
+
+    sensors = esp.get("sensors")
+    if isinstance(sensors, list) and sensors:
+        state.sensors = [float(s) for s in sensors[:4]]
+        while len(state.sensors) < 4:
+            state.sensors.append(0.0)
+
+    # OpenRB/slave en ligne = l'ESP rapporte une donnée fraîche (rb_online).
+    # On rafraîchit last_data_ts pour que get_state_dict() calcule ONLINE.
+    if esp.get("rb_online"):
+        state.last_data_ts = time.monotonic()
+
+
 @app.get("/api/status")
 def get_status():
     """Get current machine state."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
 
-    # WiFi: actively request a fresh status from the OpenRB (the ESP relays it).
     if isinstance(controller.link, WiFiLink):
-        controller.get_status()
+        # Liaison permanente : on lit le cache de l'ESP (GET léger), sans envoyer
+        # de GET_STATUS sur le lien série -> latence ≈ WiFi seul.
+        esp = controller.link.get_status()
+        if esp:
+            _apply_esp_live_status(controller.state, esp)
+    else:
+        _read_all_responses()
 
-    _read_all_responses()
     return get_state_dict(controller.state)
 
 # --- Command Endpoints -----------------------------------------------

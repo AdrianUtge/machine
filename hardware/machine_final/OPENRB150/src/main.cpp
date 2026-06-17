@@ -32,6 +32,11 @@
 #define LINK            Serial3
 #define LINK_BAUD       19200      // SoftwareSerial côté ESP -> baud modéré, fiable
 
+// --- Streaming statut (liaison permanente) ---
+// On émet le burst de statut tout seul à 10 Hz, sans attendre de GET_STATUS.
+// L'ESP cache le dernier burst -> /api/status devient instantané (pas d'A/R série).
+#define STREAM_PERIOD_MS 100
+
 // --- Stepper DM542T ---
 static const uint8_t PUL_PIN = 6;
 static const uint8_t DIR_PIN = 7;
@@ -350,6 +355,14 @@ void loop() {
         } else if (g_rx.length() < 96) {
             g_rx += c;
         }
+    }
+
+    // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
+    static uint32_t lastStreamMs = 0;
+    uint32_t now = millis();
+    if (now - lastStreamMs >= STREAM_PERIOD_MS) {
+        lastStreamMs = now;
+        sendStatus();
     }
 
     // ÉTAPE 2 (à venir) : si Mode::RUNNING, au point bas faire un burst de 10

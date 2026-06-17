@@ -46,6 +46,64 @@ struct SystemState {
     float forces[4] = {0, 0, 0, 0};  // force par cellule (N)
 } state;
 
+// ===== Cache "live" de l'OpenRB (liaison permanente) =====
+// L'OpenRB streame son statut en burst ~10 Hz. On garde le dernier ici pour
+// répondre à GET /api/status instantanément, sans aller-retour série.
+struct OpenRbLive {
+    String   rbState   = "UNKNOWN";
+    float    frequency = 0.0f;          // Hz réels rapportés par l'OpenRB
+    float    positions[4] = {0, 0, 0, 0};
+    float    sensors[4]   = {0, 0, 0, 0};   // forces lues (N)
+    bool     slaveOnline  = false;
+    uint32_t lastDataMs   = 0;          // millis() de la dernière ligne reçue
+} live;
+
+// Découpe "a,b,c,d" -> out[4] (tolère < 4 valeurs).
+static void parseCsv4(const String& csv, float out[4]) {
+    int idx = 0, start = 0;
+    while (idx < 4) {
+        int comma = csv.indexOf(',', start);
+        String tok = (comma < 0) ? csv.substring(start) : csv.substring(start, comma);
+        out[idx++] = tok.toFloat();
+        if (comma < 0) break;
+        start = comma + 1;
+    }
+}
+
+// Met à jour le cache à partir d'une ligne protocole reçue de l'OpenRB.
+static void parseOpenRbLine(const String& line) {
+    int sep = line.indexOf(':');
+    if (sep < 0) return;
+    String key = line.substring(0, sep); key.toUpperCase();
+    String val = line.substring(sep + 1); val.trim();
+    live.lastDataMs = millis();
+    if      (key == "STATE")    live.rbState = val;
+    else if (key == "FREQ")     live.frequency = val.toFloat();
+    else if (key == "POSITION") parseCsv4(val, live.positions);
+    else if (key == "FORCE")    parseCsv4(val, live.sensors);
+    else if (key == "SLAVE")    live.slaveOnline = (val == "ONLINE");
+    // ACK:/ERR: -> ignorés pour le cache (mais comptent comme "data reçue")
+}
+
+// Lecture continue du flux OpenRB (appelée à chaque loop()). UN seul lecteur
+// du port série : sendToOpenRB() n'écrit que, ne lit jamais.
+static void pumpOpenRB() {
+    static String buf;
+    while (openrb.available()) {
+        char c = (char)openrb.read();
+        if (c == '\n' || c == '\r') {
+            if (buf.length()) { parseOpenRbLine(buf); buf = ""; }
+        } else if (buf.length() < 120) {
+            buf += c;
+        }
+    }
+}
+
+// OpenRB considéré vivant si une ligne est arrivée il y a moins d'1 s.
+static bool openRbFresh() {
+    return live.lastDataMs != 0 && (millis() - live.lastDataMs) < 1000;
+}
+
 // ===== CORS: ajouter les en-têtes à TOUTES les réponses =====
 // Permet au front (navigateur) de joindre directement le NodeMCU.
 // Doit être appelé AVANT chaque server.send().
@@ -108,7 +166,7 @@ void handleStatus() {
 
     Serial.println("[REST] GET /api/status");
 
-    StaticJsonDocument<384> doc;
+    StaticJsonDocument<640> doc;
     doc["status"] = "ok";
     doc["command_count"] = state.commandCount;
     doc["uptime_ms"] = millis();
@@ -119,6 +177,16 @@ void handleStatus() {
     doc["frequency"] = state.frequency;      // consigne fréquence mémorisée
     JsonArray forcesArr = doc.createNestedArray("forces");  // consignes force par cellule
     for (int i = 0; i < 4; i++) forcesArr.add(state.forces[i]);
+
+    // --- Données LIVE de l'OpenRB (cache alimenté par le streaming) ---
+    doc["rb_state"] = live.rbState;
+    doc["rb_frequency"] = live.frequency;
+    doc["rb_online"] = openRbFresh() && live.slaveOnline;
+    doc["rb_fresh_ms"] = live.lastDataMs ? (int32_t)(millis() - live.lastDataMs) : -1;
+    JsonArray posArr = doc.createNestedArray("positions");
+    for (int i = 0; i < 4; i++) posArr.add(live.positions[i]);
+    JsonArray senArr = doc.createNestedArray("sensors");
+    for (int i = 0; i < 4; i++) senArr.add(live.sensors[i]);
 
     String response;
     serializeJson(doc, response);
@@ -144,38 +212,27 @@ String buildOpenRbLine(JsonDocument& doc, const String& cmd) {
     return cmd;
 }
 
-// ===== OpenRB-150 : envoyer une ligne et collecter les réponses =====
-void forwardToOpenRB(const String& line, JsonArray& outLines) {
-    while (openrb.available()) openrb.read();   // vider les données obsolètes
+// ===== OpenRB-150 : envoyer une ligne (fire-and-forget) =====
+// La lecture des réponses est faite en continu par pumpOpenRB() : on n'attend
+// donc plus la réponse ici -> fini la fenêtre de silence de 80 ms par commande.
+void sendToOpenRB(const String& line) {
     openrb.print(line);
     openrb.print('\n');
     Serial.print("[OpenRB] > ");
     Serial.println(line);
+}
 
-    unsigned long startMs  = millis();
-    unsigned long lastByte = millis();
-    String buf = "";
-
-    // Fenêtre max 500 ms ; on s'arrête après 80 ms de silence une fois des lignes reçues
-    while (millis() - startMs < 500) {
-        while (openrb.available()) {
-            char c = (char)openrb.read();
-            lastByte = millis();
-            if (c == '\n' || c == '\r') {
-                if (buf.length()) {
-                    outLines.add(buf);
-                    Serial.print("[OpenRB] < ");
-                    Serial.println(buf);
-                    buf = "";
-                }
-            } else if (buf.length() < 120) {
-                buf += c;
-            }
-        }
-        if (outLines.size() > 0 && (millis() - lastByte) > 80) break;
-        yield();
-    }
-    if (buf.length()) outLines.add(buf);
+// Snapshot du cache live sous forme de lignes protocole (réponse immédiate au POST).
+void appendLiveLines(JsonArray& outLines) {
+    outLines.add(String("STATE:") + live.rbState);
+    outLines.add(String("FREQ:") + String(live.frequency, 3));
+    String pos = "POSITION:";
+    for (int i = 0; i < 4; i++) { pos += String(live.positions[i], 2); if (i < 3) pos += ','; }
+    outLines.add(pos);
+    String frc = "FORCE:";
+    for (int i = 0; i < 4; i++) { frc += String(live.sensors[i], 3); if (i < 3) frc += ','; }
+    outLines.add(frc);
+    outLines.add(String("SLAVE:") + (live.slaveOnline ? "ONLINE" : "OFFLINE"));
 }
 
 // ===== Endpoint: POST /api/command =====
@@ -330,8 +387,11 @@ void handleCommand() {
     response["command_number"] = state.commandCount;
 
     String line = buildOpenRbLine(doc, command);
+    sendToOpenRB(line);
+    // Réponse immédiate : snapshot du cache live (pas d'attente série). Le statut
+    // réel suit dans <100 ms via le streaming + GET /api/status (déjà mis en cache).
     JsonArray lines = response.createNestedArray("lines");
-    forwardToOpenRB(line, lines);
+    appendLiveLines(lines);
 
     String responseStr;
     serializeJson(response, responseStr);
@@ -448,6 +508,9 @@ void setup() {
 
 // ===== Loop principal =====
 void loop() {
+    // Lecture continue du flux OpenRB (liaison permanente) -> alimente le cache.
+    pumpOpenRB();
+
     // Traiter les requêtes HTTP
     server.handleClient();
 
