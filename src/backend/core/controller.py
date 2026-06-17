@@ -13,6 +13,7 @@ from comm.protocol import (
     cmd_set_freq,
     cmd_set_speed,
     cmd_start,
+    cmd_torque,
     parse_response,
 )
 from comm.serial_link import SerialLink
@@ -96,6 +97,10 @@ class MachineController:
 
     def goto(self, table: int, position: float) -> None:
         self._send(cmd_goto(table, position))
+
+    def torque(self, on: bool) -> None:
+        # on=False -> déverrouille les moteurs (positionnement manuel).
+        self._send(cmd_torque(on))
 
     def get_status(self) -> None:
         self._send(cmd_get_status())

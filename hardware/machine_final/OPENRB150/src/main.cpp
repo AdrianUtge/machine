@@ -305,6 +305,14 @@ static void dispatch(String line) {
     }
     else if (cmd == "SET_FORCE")  handleSetForce(arg);
     else if (cmd == "GOTO")       handleGoto(arg);
+    else if (cmd == "TORQUE_OFF") {                 // déverrouille (unlock) les moteurs
+        for (uint8_t i = 0; i < g_dxlCount; i++) dxl.torqueOff(g_dxlIds[i]);
+        sendAck("TORQUE_OFF");
+    }
+    else if (cmd == "TORQUE_ON") {                  // verrouille (lock) les moteurs
+        for (uint8_t i = 0; i < g_dxlCount; i++) dxl.torqueOn(g_dxlIds[i]);
+        sendAck("TORQUE_ON");
+    }
     else                          sendErr("UNKNOWN_COMMAND");
 }
 

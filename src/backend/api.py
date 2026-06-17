@@ -54,6 +54,9 @@ class GotoRequest(BaseModel):
     table: int      # table 1-4
     position: float  # mm
 
+class TorqueRequest(BaseModel):
+    on: bool  # True = lock (TORQUE_ON), False = unlock (TORQUE_OFF)
+
 class PresetRequest(BaseModel):
     preset: str
 
@@ -497,6 +500,18 @@ def goto(request: GotoRequest):
 
     controller.goto(request.table, request.position)
     log_action("command", f"GOTO table {request.table} -> {request.position} mm")
+    _read_all_responses()
+
+    return {"success": True, "state": get_state_dict(controller.state)}
+
+@app.post("/api/command/torque")
+def set_torque(request: TorqueRequest):
+    """Lock/unlock the Dynamixel motors. on=False -> unlock (manual positioning)."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    controller.torque(request.on)
+    log_action("command", "TORQUE_ON" if request.on else "TORQUE_OFF")
     _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}

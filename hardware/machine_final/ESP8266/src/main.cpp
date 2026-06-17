@@ -229,7 +229,8 @@ void handleCommand() {
     // Commands: START, STOP, HOME, FREQUENCY, SPEED, FORCE, PRESET, MANUAL
     const char* validCommands[] = {
         "START", "STOP", "HOME", "HARD_RESET",
-        "FREQUENCY", "SPEED", "FORCE", "GOTO", "PRESET", "MANUAL", "STATUS"
+        "FREQUENCY", "SPEED", "FORCE", "GOTO", "PRESET", "MANUAL", "STATUS",
+        "TORQUE_ON", "TORQUE_OFF"
     };
     const int validCommandsCount = sizeof(validCommands) / sizeof(validCommands[0]);
 

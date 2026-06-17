@@ -48,6 +48,12 @@ def cmd_goto(table: int, position: float) -> str:
     return f"GOTO:{table}:{position}"
 
 
+def cmd_torque(on: bool) -> str:
+    # Verrouille (TORQUE_ON) / déverrouille (TORQUE_OFF) les Dynamixels.
+    # TORQUE_OFF = moteurs libres pour positionnement manuel (unlock).
+    return "TORQUE_ON" if on else "TORQUE_OFF"
+
+
 # --- Parsing -------------------------------------------------------------
 
 def parse_response(line: str, state: MachineState) -> None:
