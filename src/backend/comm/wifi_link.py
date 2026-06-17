@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 class WiFiLink:
     """HTTP-based communication link to ESP8266 controller."""
 
+    # Nombre d'essais sur perte de paquet (lien WiFi ESP intermittent).
+    MAX_RETRIES = 3
+
     def __init__(self, ip: str, port: int = 8080, auth_token: str = "", timeout: float = 2.0):
         """
         Initialize WiFi link.
@@ -51,55 +54,37 @@ class WiFiLink:
         }
 
     def connect(self) -> bool:
-        """Test connection to ESP8266."""
-        try:
-            url = f"{self.base_url}/api/status"
-            print(f"[WiFiLink] Testing connection to: {url}")
-            print(f"[WiFiLink] Timeout: {self.timeout}s")
-            print(f"[WiFiLink] Auth Header: Bearer {'*' * 20}")
+        """Test connection to ESP8266 (avec retries : le lien peut perdre des paquets)."""
+        url = f"{self.base_url}/api/status"
+        print(f"[WiFiLink] Testing connection to: {url} (timeout {self.timeout}s)")
 
-            with self._http_lock:
-                response = self._session.get(
-                    url,
-                    headers=self.headers,
-                    timeout=self.timeout
-                )
+        last_err = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                with self._http_lock:
+                    response = self._session.get(
+                        url,
+                        headers=self.headers,
+                        timeout=self.timeout
+                    )
 
-            print(f"[WiFiLink] Response Status: {response.status_code}")
-            print(f"[WiFiLink] Response Headers: {dict(response.headers)}")
+                self.connected = (response.status_code == 200)
+                if self.connected:
+                    print(f"[WiFiLink] ✅ Connecté (essai {attempt})")
+                    logger.info(f"Connected to ESP8266 at {self.ip}:{self.port}")
+                else:
+                    print(f"[WiFiLink] ❌ ESP a renvoyé {response.status_code}")
+                    logger.error(f"ESP8266 returned status {response.status_code}")
+                return self.connected
 
-            self.connected = (response.status_code == 200)
+            except Exception as e:
+                last_err = e
+                print(f"[WiFiLink] ⚠️ connexion essai {attempt}/{self.MAX_RETRIES}: {e}")
 
-            if self.connected:
-                print(f"[WiFiLink] ✅ Connected!")
-                logger.info(f"Connected to ESP8266 at {self.ip}:{self.port}")
-            else:
-                print(f"[WiFiLink] ❌ ESP8266 returned status {response.status_code}")
-                print(f"[WiFiLink] Response Body: {response.text}")
-                logger.error(f"ESP8266 returned status {response.status_code}")
-
-            return self.connected
-
-        except requests.exceptions.ConnectionError as e:
-            print(f"[WiFiLink] ❌ Connection Error: {e}")
-            print(f"[WiFiLink] Could not reach {self.base_url}")
-            logger.error(f"Failed to connect to ESP8266: {e}")
-            self.connected = False
-            return False
-
-        except requests.exceptions.Timeout as e:
-            print(f"[WiFiLink] ❌ Timeout Error: {e}")
-            print(f"[WiFiLink] ESP8266 did not respond within {self.timeout}s")
-            logger.error(f"Timeout connecting to ESP8266: {e}")
-            self.connected = False
-            return False
-
-        except Exception as e:
-            print(f"[WiFiLink] ❌ Unexpected Error: {e}")
-            print(f"[WiFiLink] Error Type: {type(e).__name__}")
-            logger.error(f"Unexpected error connecting to ESP8266: {e}")
-            self.connected = False
-            return False
+        print(f"[WiFiLink] ❌ Impossible de joindre {self.base_url} après {self.MAX_RETRIES} essais: {last_err}")
+        logger.error(f"Failed to connect to ESP8266 after {self.MAX_RETRIES} retries: {last_err}")
+        self.connected = False
+        return False
 
     def disconnect(self) -> bool:
         """Disconnect from ESP8266."""
@@ -122,50 +107,51 @@ class WiFiLink:
             logger.error("Not connected to ESP8266")
             return False
 
-        try:
-            payload = {"command": command.upper()}
+        payload = {"command": command.upper()}
+        if kwargs:
+            for key, value in kwargs.items():
+                payload[key] = value
 
-            # Add parameters if provided
-            if kwargs:
-                for key, value in kwargs.items():
-                    payload[key] = value
+        print(f"[WiFiLink] Sending command: {payload}")
+        logger.debug(f"Sending command: {payload}")
 
-            print(f"[WiFiLink] Sending command: {payload}")
-            logger.debug(f"Sending command: {payload}")
+        # Le lien WiFi de l'ESP peut perdre des paquets (alim/RF) : on réessaie
+        # quelques fois pour passer outre une perte ponctuelle plutôt que d'échouer.
+        last_err = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            try:
+                with self._http_lock:
+                    response = self._session.post(
+                        f"{self.base_url}/api/command",
+                        headers=self.headers,
+                        json=payload,
+                        timeout=self.timeout
+                    )
 
-            with self._http_lock:
-                response = self._session.post(
-                    f"{self.base_url}/api/command",
-                    headers=self.headers,
-                    json=payload,
-                    timeout=self.timeout
-                )
+                if response.status_code == 200:
+                    # L'ESP renvoie les lignes de réponse remontées par l'OpenRB.
+                    try:
+                        data = response.json()
+                        for ln in data.get("lines", []):
+                            if ln:
+                                self._rx_lines.append(str(ln))
+                                print(f"[WiFiLink] < {ln}")
+                    except Exception as e:
+                        print(f"[WiFiLink] (no lines parsed: {e})")
+                    print(f"[WiFiLink] ✅ Command '{command}' sent (essai {attempt})")
+                    return True
+                else:
+                    print(f"[WiFiLink] ❌ ESP returned {response.status_code}")
+                    logger.error(f"ESP8266 returned status {response.status_code}")
+                    return False  # réponse HTTP reçue mais erreur -> ne pas réessayer
 
-            print(f"[WiFiLink] Response: {response.status_code}")
+            except Exception as e:
+                last_err = e
+                print(f"[WiFiLink] ⚠️ essai {attempt}/{self.MAX_RETRIES} échoué: {e}")
 
-            if response.status_code == 200:
-                # L'ESP renvoie les lignes de réponse remontées par l'OpenRB.
-                # On les met en file pour read_line() -> parse_response().
-                try:
-                    data = response.json()
-                    for ln in data.get("lines", []):
-                        if ln:
-                            self._rx_lines.append(str(ln))
-                            print(f"[WiFiLink] < {ln}")
-                except Exception as e:
-                    print(f"[WiFiLink] (no lines parsed: {e})")
-                print(f"[WiFiLink] ✅ Command '{command}' sent successfully")
-                logger.debug(f"Command '{command}' sent successfully")
-                return True
-            else:
-                print(f"[WiFiLink] ❌ ESP8266 returned status {response.status_code}")
-                logger.error(f"ESP8266 returned status {response.status_code}")
-                return False
-
-        except Exception as e:
-            print(f"[WiFiLink] ❌ Failed to send command: {e}")
-            logger.error(f"Failed to send command: {e}")
-            return False
+        print(f"[WiFiLink] ❌ Échec commande '{command}' après {self.MAX_RETRIES} essais: {last_err}")
+        logger.error(f"Failed to send command after {self.MAX_RETRIES} retries: {last_err}")
+        return False
 
     def get_status(self) -> Optional[Dict[str, Any]]:
         """Get ESP8266 status."""
