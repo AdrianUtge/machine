@@ -6,6 +6,7 @@ Provides the same interface as SerialLink but over WiFi.
 import requests
 import json
 import logging
+import threading
 from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ logger = logging.getLogger(__name__)
 class WiFiLink:
     """HTTP-based communication link to ESP8266 controller."""
 
-    def __init__(self, ip: str, port: int = 8080, auth_token: str = "", timeout: float = 5.0):
+    def __init__(self, ip: str, port: int = 8080, auth_token: str = "", timeout: float = 2.0):
         """
         Initialize WiFi link.
 
@@ -22,7 +23,8 @@ class WiFiLink:
             ip: ESP8266 IP address
             port: ESP8266 HTTP server port
             auth_token: Bearer token for authentication
-            timeout: Request timeout in seconds
+            timeout: Request timeout in seconds (court : un brownout ESP ne doit
+                     pas bloquer longtemps un thread du pool FastAPI)
         """
         self.ip = ip
         self.port = port
@@ -30,6 +32,12 @@ class WiFiLink:
         self.timeout = timeout
         self.base_url = f"http://{ip}:{port}"
         self.connected = False
+        # L'ESP8266 ne gère qu'UNE connexion HTTP à la fois : sérialiser tous les
+        # accès évite les "connection refused"/timeouts quand un poll de statut et
+        # une commande tombent en même temps (endpoints désormais dans le threadpool).
+        self._http_lock = threading.Lock()
+        # Session réutilisée (keep-alive) : évite de rouvrir une socket TCP à chaque requête.
+        self._session = requests.Session()
         # Lignes de réponse remontées par l'OpenRB (via l'ESP), FIFO.
         # Alimentée par send_command(), consommée par read_line().
         self._rx_lines: list[str] = []
@@ -50,11 +58,12 @@ class WiFiLink:
             print(f"[WiFiLink] Timeout: {self.timeout}s")
             print(f"[WiFiLink] Auth Header: Bearer {'*' * 20}")
 
-            response = requests.get(
-                url,
-                headers=self.headers,
-                timeout=self.timeout
-            )
+            with self._http_lock:
+                response = self._session.get(
+                    url,
+                    headers=self.headers,
+                    timeout=self.timeout
+                )
 
             print(f"[WiFiLink] Response Status: {response.status_code}")
             print(f"[WiFiLink] Response Headers: {dict(response.headers)}")
@@ -124,12 +133,13 @@ class WiFiLink:
             print(f"[WiFiLink] Sending command: {payload}")
             logger.debug(f"Sending command: {payload}")
 
-            response = requests.post(
-                f"{self.base_url}/api/command",
-                headers=self.headers,
-                json=payload,
-                timeout=self.timeout
-            )
+            with self._http_lock:
+                response = self._session.post(
+                    f"{self.base_url}/api/command",
+                    headers=self.headers,
+                    json=payload,
+                    timeout=self.timeout
+                )
 
             print(f"[WiFiLink] Response: {response.status_code}")
 
@@ -164,11 +174,12 @@ class WiFiLink:
             return None
 
         try:
-            response = requests.get(
-                f"{self.base_url}/api/status",
-                headers=self.headers,
-                timeout=self.timeout
-            )
+            with self._http_lock:
+                response = self._session.get(
+                    f"{self.base_url}/api/status",
+                    headers=self.headers,
+                    timeout=self.timeout
+                )
 
             if response.status_code == 200:
                 return response.json()

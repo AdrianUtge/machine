@@ -195,14 +195,14 @@ def get_state_dict(state: MachineState) -> MachineStateResponse:
 # --- Connection Endpoints -------------------------------------------
 
 @app.get("/api/ports")
-async def get_available_ports():
+def get_available_ports():
     """Get list of available serial ports."""
     import serial.tools.list_ports
     ports = [port.device for port in serial.tools.list_ports.comports()]
     return {"ports": ports}
 
 @app.get("/api/wifi-interfaces")
-async def get_wifi_interfaces():
+def get_wifi_interfaces():
     """Get list of available WiFi interfaces."""
     if WiFiManager is None:
         return {"interfaces": [], "error": "WiFi manager not available"}
@@ -223,7 +223,7 @@ def _is_wifi_interface(port: str) -> bool:
     ]
 
 @app.post("/api/connect")
-async def connect(request: ConnectRequest):
+def connect(request: ConnectRequest):
     """Connect to machine on specified port or WiFi interface."""
     global controller
 
@@ -363,7 +363,7 @@ async def connect(request: ConnectRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/disconnect")
-async def disconnect():
+def disconnect():
     """Disconnect from machine."""
     global controller
 
@@ -378,7 +378,7 @@ async def disconnect():
     return {"success": True, "message": "Disconnected"}
 
 @app.get("/api/status")
-async def get_status():
+def get_status():
     """Get current machine state."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -403,7 +403,7 @@ def _read_all_responses():
         log_action("response", line)
 
 @app.post("/api/command/home")
-async def home():
+def home():
     """Execute HOME command."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -415,7 +415,7 @@ async def home():
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/start")
-async def start():
+def start():
     """Execute START command."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -427,7 +427,7 @@ async def start():
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/stop")
-async def stop():
+def stop():
     """Execute STOP command (alias for hard_reset for now)."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -439,7 +439,7 @@ async def stop():
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/hard-reset")
-async def hard_reset():
+def hard_reset():
     """Execute HARD_RESET command."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -451,7 +451,7 @@ async def hard_reset():
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/frequency")
-async def set_frequency(request: FrequencyRequest):
+def set_frequency(request: FrequencyRequest):
     """Set frequency (Hz)."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -463,7 +463,7 @@ async def set_frequency(request: FrequencyRequest):
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/speed")
-async def set_speed(request: SpeedRequest):
+def set_speed(request: SpeedRequest):
     """Set T_Speed (%)."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -475,7 +475,7 @@ async def set_speed(request: SpeedRequest):
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/force")
-async def set_force(request: ForceRequest):
+def set_force(request: ForceRequest):
     """Set force target (N)."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -490,7 +490,7 @@ async def set_force(request: ForceRequest):
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/goto")
-async def goto(request: GotoRequest):
+def goto(request: GotoRequest):
     """Move a table (1-4) to a position (mm)."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -502,7 +502,7 @@ async def goto(request: GotoRequest):
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/preset")
-async def apply_preset(request: PresetRequest):
+def apply_preset(request: PresetRequest):
     """Apply frequency preset."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -518,7 +518,7 @@ async def apply_preset(request: PresetRequest):
     return {"success": True, "state": get_state_dict(controller.state)}
 
 @app.post("/api/command/manual")
-async def send_manual_command(request: dict):
+def send_manual_command(request: dict):
     """Send manual command."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -536,12 +536,12 @@ async def send_manual_command(request: dict):
 # --- Custom Presets (persisted in preset.json) ----------------------
 
 @app.get("/api/presets")
-async def list_presets():
+def list_presets():
     """List all saved custom presets (frequency + force couples)."""
     return {"presets": preset_store.load_presets()}
 
 @app.post("/api/presets")
-async def save_custom_preset(preset: CustomPreset):
+def save_custom_preset(preset: CustomPreset):
     """Create or update a custom preset. Persisted to preset.json."""
     name = preset.name.strip()
     if not name:
@@ -552,14 +552,14 @@ async def save_custom_preset(preset: CustomPreset):
     return {"success": True, "presets": presets}
 
 @app.delete("/api/presets/{name}")
-async def remove_custom_preset(name: str):
+def remove_custom_preset(name: str):
     """Delete a custom preset. Persisted to preset.json."""
     presets = preset_store.delete_preset(name)
     log_action("state", f"Preset deleted: {name}")
     return {"success": True, "presets": presets}
 
 @app.post("/api/presets/{name}/apply")
-async def apply_custom_preset(name: str):
+def apply_custom_preset(name: str):
     """Apply a custom preset: send its frequency and force to the node."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
@@ -584,12 +584,12 @@ async def apply_custom_preset(name: str):
 # --- Monitoring Endpoints -------------------------------------------
 
 @app.get("/api/logs")
-async def get_logs(limit: int = 50):
+def get_logs(limit: int = 50):
     """Get serial logs."""
     return {"logs": serial_logs[-limit:]}
 
 @app.get("/api/logs/commands")
-async def get_command_history(limit: int = 30):
+def get_command_history(limit: int = 30):
     """Get command history."""
     if not controller:
         return {"commands": []}
@@ -597,7 +597,7 @@ async def get_command_history(limit: int = 30):
     return {"commands": controller.logger.command_history[-limit:]}
 
 @app.get("/api/logs/console")
-async def get_console_logs(limit: int = 30):
+def get_console_logs(limit: int = 30):
     """Get console logs."""
     if not controller:
         return {"logs": []}
@@ -607,7 +607,7 @@ async def get_console_logs(limit: int = 30):
 # --- Health Check ------------------------------------------------
 
 @app.get("/api/health")
-async def health_check():
+def health_check():
     """Health check endpoint."""
     return {
         "status": "ok",
