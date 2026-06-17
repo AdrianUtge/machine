@@ -1,13 +1,23 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Signal, Clock, Gauge, Weight, Unlock, Lock } from 'lucide-react';
+import { AlertCircle, Signal, Clock, Gauge, Weight, Unlock, Lock, Wifi } from 'lucide-react';
 import type { MachineState, CustomPresets } from '../hooks/useMachineController';
 
 interface StatusPanelSimpleProps {
   isConnected: boolean;
   machineState: MachineState | null;
   customPresets: CustomPresets;
+  latencyMs?: number | null;  // latence aller-retour du poll (ms), -1 = lien coupé
   onTorqueOff?: () => void;
   onTorqueOn?: () => void;
+}
+
+// Couleur/libellé du badge de latence selon la qualité du lien.
+function latencyStyle(ms: number | null | undefined): { text: string; cls: string } {
+  if (ms == null) return { text: '— ms', cls: 'text-slate-400 bg-slate-700/40 border-slate-600' };
+  if (ms < 0) return { text: 'no link', cls: 'text-red-400 bg-red-900/30 border-red-700' };
+  if (ms < 150) return { text: `${ms} ms`, cls: 'text-green-400 bg-green-900/30 border-green-700' };
+  if (ms < 400) return { text: `${ms} ms`, cls: 'text-amber-400 bg-amber-900/30 border-amber-700' };
+  return { text: `${ms} ms`, cls: 'text-red-400 bg-red-900/30 border-red-700' };
 }
 
 function formatDuration(ms: number): string {
@@ -40,6 +50,7 @@ export default function StatusPanelSimple({
   isConnected,
   machineState,
   customPresets,
+  latencyMs,
   onTorqueOff,
   onTorqueOn,
 }: StatusPanelSimpleProps) {
@@ -84,6 +95,18 @@ export default function StatusPanelSimple({
       <h3 className="text-lg font-semibold flex items-center gap-2">
         <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`}></div>
         Status
+        {isConnected && (() => {
+          const { text, cls } = latencyStyle(latencyMs);
+          return (
+            <span
+              className={`ml-auto flex items-center gap-1 px-2 py-0.5 rounded-md border text-xs font-mono font-semibold ${cls}`}
+              title="Latence aller-retour du lien (frontend → backend → ESP → OpenRB)"
+            >
+              <Wifi className="w-3.5 h-3.5" />
+              {text}
+            </span>
+          );
+        })()}
       </h3>
 
       {/* General */}

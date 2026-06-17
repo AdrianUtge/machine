@@ -43,6 +43,10 @@ export const useMachineController = () => {
   const [lastLogCount, setLastLogCount] = useState(0);
   const [customPresets, setCustomPresets] = useState<CustomPresets>({});
   const [connectedSince, setConnectedSince] = useState<number | null>(null);
+  // Latence aller-retour du poll /api/status (ms). Sur WiFi, le backend interroge
+  // l'ESP -> l'OpenRB dans ce même appel, donc ça mesure tout le lien de bout en bout.
+  // null = pas encore de mesure, -1 = dernier poll en échec (lien coupé).
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
   const lastLogTimeRef = useRef<number>(Date.now());
   // Stable log list: timestamps are assigned once on first arrival, not re-computed on each poll.
   const stableLogsRef = useRef<SerialLog[]>([]);
@@ -188,13 +192,22 @@ export const useMachineController = () => {
   const getStatus = useCallback(async () => {
     if (!isConnected) return;
 
+    const t0 = performance.now();
     try {
       const response = await fetch(`${API_BASE}/status`);
       if (response.ok) {
         const state = await response.json();
         setMachineState(state);
+        // Latence lissée (EMA) pour un affichage stable malgré la jitter du lien.
+        const sample = Math.round(performance.now() - t0);
+        setLatencyMs((prev) =>
+          prev == null || prev < 0 ? sample : Math.round(prev * 0.7 + sample * 0.3)
+        );
+      } else {
+        setLatencyMs(-1);
       }
     } catch (err) {
+      setLatencyMs(-1);  // lien coupé / backend injoignable
       setError('Failed to get status: ' + String(err));
     }
   }, [isConnected]);
@@ -215,8 +228,17 @@ export const useMachineController = () => {
       });
 
       if (!response.ok) {
-        const err = await response.text();
-        throw new Error(err);
+        // Message clair : endpoint + code HTTP + détail backend (FastAPI renvoie {"detail": ...}).
+        const raw = await response.text();
+        let detail = raw;
+        try { detail = JSON.parse(raw).detail ?? raw; } catch { /* texte brut */ }
+        if (response.status === 404) {
+          throw new Error(
+            `POST ${endpoint} → 404 (endpoint absent côté backend). ` +
+            `Vérifie que api.py expose cette route et que le serveur a redémarré.`
+          );
+        }
+        throw new Error(`POST ${endpoint} → ${response.status}: ${detail}`);
       }
 
       const data = await response.json();
@@ -227,7 +249,13 @@ export const useMachineController = () => {
 
       return data;
     } catch (err) {
-      setError('Command failed: ' + String(err));
+      // Erreur réseau (fetch rejette) = backend injoignable, pas une 4xx/5xx.
+      const msg = err instanceof Error ? err.message : String(err);
+      const networkHint = msg.includes('Failed to fetch')
+        ? ` — backend injoignable (${API_BASE}). Le serveur uvicorn tourne-t-il ?`
+        : '';
+      setError(`Command failed: ${msg}${networkHint}`);
+      console.error(`[sendCommand] ${endpoint}`, body ?? '', '→', msg);
       return null;
     } finally {
       setIsLoading(false);
@@ -458,6 +486,7 @@ export const useMachineController = () => {
     logs,
     isLoading,
     error,
+    latencyMs,
 
     // Connection
     getAvailablePorts,

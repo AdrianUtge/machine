@@ -32,6 +32,7 @@ export default function App() {
     clearLogs,
     torqueOff,
     torqueOn,
+    latencyMs,
   } = useMachineController();
 
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
@@ -185,6 +186,7 @@ export default function App() {
             isConnected={isConnected}
             machineState={machineState}
             customPresets={customPresets}
+            latencyMs={latencyMs}
             onTorqueOff={torqueOff}
             onTorqueOn={torqueOn}
           />
