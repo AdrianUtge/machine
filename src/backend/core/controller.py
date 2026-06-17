@@ -48,6 +48,8 @@ class MachineController:
         if line:
             self.logger.log_rx(line)
             parse_response(line, self.state)
+            # Toute ligne reçue = l'OpenRB est vivant (sert au slave_status).
+            self.state.last_data_ts = time.monotonic()
         return line
 
     def home(self) -> None:

@@ -30,6 +30,9 @@ class MachineState:
     errors: str = "NONE"
     slave_status: str = "UNKNOWN"
     machine_status: str = "DISCONNECTED"
+    # Horodatage (monotonic) de la dernière ligne reçue de l'OpenRB.
+    # Sert à déduire l'état du slave : ONLINE = data reçue récemment, OFFLINE sinon.
+    last_data_ts: float = 0.0
 
     def __post_init__(self):
         if self.positions is None:

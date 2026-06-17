@@ -165,8 +165,18 @@ def stop_background_reader():
         background_reader_thread.join(timeout=1.0)
     print("✓ Background serial reader stopped")
 
+# Au-delà de ce délai sans data de l'OpenRB, on considère le slave hors-ligne.
+SLAVE_DATA_TIMEOUT_S = 3.0
+
 def get_state_dict(state: MachineState) -> MachineStateResponse:
     """Convert MachineState to response dict."""
+    # L'état du slave (OpenRB) ne dépend QUE de la réception de data récente,
+    # pas de la ligne SLAVE: du firmware (qui ne reflète que le nb de Dynamixels).
+    if state.last_data_ts > 0.0 and (time.monotonic() - state.last_data_ts) < SLAVE_DATA_TIMEOUT_S:
+        slave_status = "ONLINE"
+    else:
+        slave_status = "OFFLINE"
+
     return MachineStateResponse(
         preset_name=state.preset_name,
         frequency_hz=state.frequency_hz,
@@ -177,7 +187,7 @@ def get_state_dict(state: MachineState) -> MachineStateResponse:
         sensors=state.sensors,
         motor_current=state.motor_current,
         errors=state.errors,
-        slave_status=state.slave_status,
+        slave_status=slave_status,
         machine_status=state.machine_status,
         cycle_start=state.cycle_start,
     )
