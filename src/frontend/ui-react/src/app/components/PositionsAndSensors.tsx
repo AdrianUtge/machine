@@ -5,19 +5,40 @@ interface PositionsAndSensorsProps {
   positions: number[];  // 4 positions
   sensors: number[];    // 4 force sensors
   isConnected: boolean;
+  machineStatus?: string;     // RUNNING / IDLE / HOMING / READY / ERROR
+  forceTargets?: number[];    // force targets per cell (N), 0 = none
   onGotoCommand?: (table: number, position: number) => void;  // table 1-4, position mm
   graphSensorIdx?: number | null;           // sensor currently shown in the graph (controlled by parent)
   onSensorSelect?: (sensorIdx: number | null) => void;        // null = close/deselect the graph
+}
+
+// Returns the Tailwind border class for a table based on force control state.
+// FORCE_CONTACT_N = 0.5 N, tolerance = ±10 %.
+function tableRingClass(
+  running: boolean,
+  force: number,
+  target: number,
+): string {
+  if (!running || target <= 0) return 'ring-1 ring-slate-600';
+  const lo = target * 0.9;
+  const hi = target * 1.1;
+  if (force < 0.5)          return 'ring-2 ring-blue-400';   // avance rapide (pas de contact)
+  if (force > hi)            return 'ring-2 ring-red-500';    // retrait (dépassement)
+  if (force >= lo)           return 'ring-2 ring-green-400';  // on point ±10 %
+  return 'ring-2 ring-yellow-400';                            // avance lente (en contact, < cible)
 }
 
 export default function PositionsAndSensors({
   positions = [0, 0, 0, 0],
   sensors = [0, 0, 0, 0],
   isConnected = false,
+  machineStatus = 'IDLE',
+  forceTargets = [0, 0, 0, 0],
   onGotoCommand,
   graphSensorIdx = null,
   onSensorSelect
 }: PositionsAndSensorsProps) {
+  const isRunning = machineStatus === 'RUNNING';
   const [selectedTableIdx, setSelectedTableIdx] = useState<number | null>(null);
   // Kept as a raw string so the field can be fully cleared (no stuck "0").
   const [gotoPosition, setGotoPosition] = useState('0');
@@ -47,7 +68,7 @@ export default function PositionsAndSensors({
 
   const handleGotoSend = () => {
     if (onGotoCommand && selectedTableIdx !== null) {
-      const p = Math.min(Math.max(parseFloat(gotoPosition) || 0, 0), 96);  // clamp 0..96 mm
+      const p = Math.min(Math.max(parseFloat(gotoPosition) || 0, 0), 500);  // mm, max 500 mm (5 tours)
       onGotoCommand(selectedTableIdx + 1, p);  // table is 1-indexed on the wire
     }
   };
@@ -57,7 +78,7 @@ export default function PositionsAndSensors({
       {/* Table + Sensor Pairs - 2x2 Grid */}
       <div className="grid grid-cols-2 gap-3 flex-1">
         {[0, 1, 2, 3].map((idx) => (
-          <div key={idx} className="bg-slate-700 rounded-lg p-3 space-y-2 flex flex-col">
+          <div key={idx} className={`bg-slate-700 rounded-lg p-3 space-y-2 flex flex-col ${tableRingClass(isRunning, sens[idx], forceTargets[idx] ?? 0)}`}>
             {/* Table */}
             <button
               onClick={() => handleTableClick(idx)}
@@ -117,8 +138,8 @@ export default function PositionsAndSensors({
           <input
             type="number"
             min="0"
-            max="96"
-            step="0.1"
+            max="500"
+            step="0.5"
             value={gotoPosition}
             onChange={handleGotoChange}
             disabled={!isConnected || selectedTableIdx === null}

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Signal, Clock, Gauge, Weight } from 'lucide-react';
+import { AlertCircle, Signal, Clock, Gauge, Weight, Unlock, Lock } from 'lucide-react';
 import type { MachineState, CustomPresets } from '../hooks/useMachineController';
 
 interface StatusPanelSimpleProps {
   isConnected: boolean;
   machineState: MachineState | null;
   customPresets: CustomPresets;
+  onTorqueOff?: () => void;
+  onTorqueOn?: () => void;
 }
 
 function formatDuration(ms: number): string {
@@ -38,8 +40,11 @@ export default function StatusPanelSimple({
   isConnected,
   machineState,
   customPresets,
+  onTorqueOff,
+  onTorqueOn,
 }: StatusPanelSimpleProps) {
   const [now, setNow] = useState(Date.now());
+  const [torqueLocked, setTorqueLocked] = useState(true);
 
   // Tick every second to keep the runtime live
   useEffect(() => {
@@ -118,14 +123,66 @@ export default function StatusPanelSimple({
         </div>
       )}
 
-      {/* Slave Status */}
-      <div className="border-t border-slate-700 pt-2 flex items-center gap-2 text-sm">
-        <Signal className="w-4 h-4" />
-        <span className="text-slate-400">Slave:</span>
-        <span className={`font-semibold ${machineState.slave_status === 'UNKNOWN' ? 'text-yellow-500' : 'text-green-500'}`}>
-          {machineState.slave_status}
-        </span>
-      </div>
+      {/* Slave (OpenRB / Dynamixel) connection indicator */}
+      {(() => {
+        const online = machineState.slave_status === 'ONLINE';
+        return (
+          <div className="border-t border-slate-700 pt-2">
+            <div className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg ${online ? 'bg-green-900/30 border border-green-700' : 'bg-red-900/30 border border-red-700'}`}>
+              <span className="flex items-center gap-2 text-sm">
+                <Signal className={`w-4 h-4 ${online ? 'text-green-400' : 'text-red-400'}`} />
+                <span className="text-slate-300">Slave</span>
+              </span>
+              <span className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full ${online ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                <span className={`font-semibold text-sm ${online ? 'text-green-400' : 'text-red-400'}`}>
+                  {online ? 'Connected' : 'Disconnected'}
+                </span>
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Torque unlock / lock — pour positionner les moteurs à la main */}
+      {isConnected && machineState?.slave_status === 'ONLINE' && (
+        <div className="border-t border-slate-700 pt-2">
+          {torqueLocked ? (
+            <button
+              onClick={() => { onTorqueOff?.(); setTorqueLocked(false); }}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-amber-600 hover:bg-amber-500 rounded-lg text-sm font-semibold transition-colors"
+              title="Désactive le couple sur tous les Dynamixels — rotation libre"
+            >
+              <Unlock className="w-4 h-4" />
+              Unlock motors
+            </button>
+          ) : (
+            <button
+              onClick={() => { onTorqueOn?.(); setTorqueLocked(true); }}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-green-700 hover:bg-green-600 rounded-lg text-sm font-semibold transition-colors"
+              title="Réactive le couple — les moteurs tiennent leur position"
+            >
+              <Lock className="w-4 h-4" />
+              Lock motors
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Cell voltages (raw) — utile pour calibrer cal_330.txt */}
+      {machineState.cell_volts && (
+        <div className="border-t border-slate-700 pt-2 space-y-2 text-sm">
+          <p className="text-xs text-slate-400 uppercase font-semibold">Cell voltage (V)</p>
+          <div className="grid grid-cols-4 gap-2">
+            {machineState.cell_volts.slice(0, 4).map((v, i) => (
+              <div key={i} className="bg-slate-900 rounded p-2 text-center">
+                <div className="text-[10px] text-slate-500">C{i + 1}</div>
+                <div className="font-mono font-bold text-cyan-400 text-sm">{(v ?? 0).toFixed(3)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Errors */}
       {hasError && (

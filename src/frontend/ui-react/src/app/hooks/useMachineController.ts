@@ -10,7 +10,8 @@ export interface MachineState {
   force_targets?: number[];
   cycle_start?: number | null;  // epoch ms, start of the running cycle
   positions: number[];  // 4 table positions
-  sensors: number[];    // 4 force sensors
+  sensors: number[];    // 4 force sensors (N, calibrated)
+  cell_volts?: number[];// 4 raw cell voltages (V) — for calibration
   motor_current: string | null;
   errors: string;
   slave_status: string;
@@ -18,6 +19,7 @@ export interface MachineState {
 }
 
 export interface SerialLog {
+  timestamp: string;
   type: 'command' | 'response' | 'state' | 'error' | 'done';
   message: string;
 }
@@ -42,6 +44,8 @@ export const useMachineController = () => {
   const [customPresets, setCustomPresets] = useState<CustomPresets>({});
   const [connectedSince, setConnectedSince] = useState<number | null>(null);
   const lastLogTimeRef = useRef<number>(Date.now());
+  // Stable log list: timestamps are assigned once on first arrival, not re-computed on each poll.
+  const stableLogsRef = useRef<SerialLog[]>([]);
 
   // Track connection start time for runtime display
   useEffect(() => {
@@ -257,6 +261,16 @@ export const useMachineController = () => {
     [sendCommand]
   );
 
+  const torqueOff = useCallback(() =>
+    sendCommand('/command/torque', { on: false }),
+    [sendCommand]
+  );
+
+  const torqueOn = useCallback(() =>
+    sendCommand('/command/torque', { on: true }),
+    [sendCommand]
+  );
+
   const applyPreset = useCallback((preset: string) =>
     sendCommand('/command/preset', { preset }),
     [sendCommand]
@@ -347,17 +361,41 @@ export const useMachineController = () => {
     loadPresets();
   }, [loadPresets]);
 
+  // Clear the displayed log list (frontend only — backend buffer persists).
+  // On next poll, entries reappear with fresh timestamps.
+  const clearLogs = useCallback(() => {
+    stableLogsRef.current = [];
+    setLogs([]);
+  }, []);
+
   // Refresh logs
   const refreshLogs = useCallback(async () => {
     try {
       const response = await fetch(`${API_BASE}/logs?limit=200`);
       if (response.ok) {
         const data = await response.json();
-        const logArray = (data.logs || []).map((log: any, idx: number) => ({
-          timestamp: new Date().toLocaleTimeString(),
-          type: log.type || 'state',
-          message: log.message,
-        }));
+        const incoming: any[] = data.logs || [];
+        const prev = stableLogsRef.current;
+        const now = new Date().toLocaleTimeString();
+
+        // Preserve timestamps for entries that already existed at the same index;
+        // only stamp genuinely new entries (appended at the end).
+        const logArray: SerialLog[] = incoming.map((log: any, idx: number) => {
+          if (
+            idx < prev.length &&
+            prev[idx].message === log.message &&
+            prev[idx].type === (log.type || 'state')
+          ) {
+            return prev[idx];           // already seen — keep original timestamp
+          }
+          return {
+            timestamp: now,
+            type: log.type || 'state',
+            message: log.message,
+          };
+        });
+
+        stableLogsRef.current = logArray;
         setLogs(logArray);
         setLastLogCount(logArray.length);
 
@@ -394,13 +432,23 @@ export const useMachineController = () => {
     // Initial load
     refreshLogs();
 
-    // Setup polling interval - refresh every 200ms for real-time feel
+    // Logs n'ont pas besoin du 5 Hz : 500 ms réduit de moitié le volume de
+    // requêtes (le statut, lui, reste à 200 ms pour le graphe temps réel).
     const pollInterval = setInterval(() => {
       refreshLogs();
-    }, 200);
+    }, 500);
 
     return () => clearInterval(pollInterval);
   }, [isConnected, refreshLogs]);
+
+  // Poll machine status (positions / forces / voltages / state) so the live
+  // data from the OpenRB keeps flowing to the panel.
+  useEffect(() => {
+    if (!isConnected) return;
+    getStatus();
+    const statusInterval = setInterval(() => { getStatus(); }, 200);
+    return () => clearInterval(statusInterval);
+  }, [isConnected, getStatus]);
 
   return {
     // State
@@ -428,6 +476,8 @@ export const useMachineController = () => {
     goto,
     applyPreset,
     sendManualCommand,
+    torqueOff,
+    torqueOn,
 
     // Custom presets (frequency + force)
     customPresets,
@@ -438,5 +488,6 @@ export const useMachineController = () => {
 
     // Utils
     refreshLogs,
+    clearLogs,
   };
 };

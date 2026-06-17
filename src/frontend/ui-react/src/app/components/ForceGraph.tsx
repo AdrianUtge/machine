@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { TrendingDown } from 'lucide-react';
 
@@ -9,37 +9,31 @@ interface ForceGraphProps {
 }
 
 interface DataPoint {
-  time: number;
+  time: number;   // secondes depuis le début du graphe
   force: number;
 }
+
+const WINDOW_POINTS = 150;  // 150 × 200 ms = 30 s de données
 
 export default function ForceGraph({ sensorIdx, currentForce, onClose }: ForceGraphProps) {
   const [data, setData] = useState<DataPoint[]>([]);
   const [maxForce, setMaxForce] = useState(0);
   const [avgForce, setAvgForce] = useState(0);
-  const timeCounter = useState(0)[0];
+  const startTimeRef = useRef<number | null>(null);
 
   // Update graph data when sensor force changes
   useEffect(() => {
-    setData((prevData) => {
-      const newData = [
-        ...prevData,
-        {
-          time: prevData.length,
-          force: currentForce,
-        },
-      ];
-      // Keep last 60 points for smooth animation
-      return newData.slice(-60);
-    });
+    const now = Date.now();
+    if (startTimeRef.current === null) startTimeRef.current = now;
+    const elapsed = (now - startTimeRef.current) / 1000;  // secondes
 
-    // Update max and avg
     setData((prevData) => {
-      if (prevData.length === 0) return prevData;
-      const forces = prevData.map((d) => d.force);
+      const newData = [...prevData, { time: elapsed, force: currentForce }];
+      const trimmed = newData.slice(-WINDOW_POINTS);
+      const forces = trimmed.map((d) => d.force);
       setMaxForce(Math.max(...forces));
       setAvgForce(forces.reduce((a, b) => a + b, 0) / forces.length);
-      return prevData;
+      return trimmed;
     });
   }, [currentForce]);
 
@@ -94,7 +88,8 @@ export default function ForceGraph({ sensorIdx, currentForce, onClose }: ForceGr
               dataKey="time"
               stroke="#94a3b8"
               style={{ fontSize: '12px' }}
-              label={{ value: 'Time (samples)', position: 'insideBottom', offset: -5 }}
+              tickFormatter={(v: number) => `${v.toFixed(1)}s`}
+              label={{ value: 'Time (s)', position: 'insideBottom', offset: -5 }}
             />
             <YAxis
               stroke="#94a3b8"
@@ -108,6 +103,7 @@ export default function ForceGraph({ sensorIdx, currentForce, onClose }: ForceGr
                 borderRadius: '8px',
               }}
               formatter={(value: number) => [value.toFixed(2) + ' N', 'Force']}
+              labelFormatter={(t: number) => `t = ${Number(t).toFixed(2)} s`}
               labelStyle={{ color: '#94a3b8' }}
             />
             <Legend
@@ -129,7 +125,7 @@ export default function ForceGraph({ sensorIdx, currentForce, onClose }: ForceGr
       </div>
 
       <div className="text-xs text-slate-400 text-center">
-        Displaying last 60 samples • Updates in real-time
+        Displaying last 30 s • Updates at 5 Hz
       </div>
     </div>
   );

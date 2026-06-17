@@ -8,12 +8,6 @@ import PositionsAndSensors from './components/PositionsAndSensors';
 import ForceGraph from './components/ForceGraph';
 import { useMachineController } from './hooks/useMachineController';
 
-interface SerialLog {
-  timestamp: string;
-  type: 'command' | 'response' | 'state' | 'error' | 'done';
-  message: string;
-}
-
 export default function App() {
   const {
     isConnected,
@@ -35,13 +29,15 @@ export default function App() {
     savePreset,
     deletePreset,
     refreshLogs,
+    clearLogs,
+    torqueOff,
+    torqueOn,
   } = useMachineController();
 
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
   const [loadingPorts, setLoadingPorts] = useState(true);
   const [portsError, setPortsError] = useState<string | null>(null);
   const [showConnection, setShowConnection] = useState(true);
-  const [serialLogs, setSerialLogs] = useState<SerialLog[]>([]);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [selectedSensorIdx, setSelectedSensorIdx] = useState<number | null>(null);
   const [advanced, setAdvanced] = useState(false);
@@ -75,17 +71,6 @@ export default function App() {
       setConnectionError(null);
     }
   }, [isConnected]);
-
-  // Map API logs to serial logs with timestamps
-  useEffect(() => {
-    const newLogs = logs.map((log: any, idx: number) => ({
-      timestamp: new Date(Date.now() - (logs.length - idx) * 100)
-        .toLocaleTimeString(),
-      type: log.type || 'state',
-      message: log.message,
-    }));
-    setSerialLogs(newLogs);
-  }, [logs]);
 
   const handleConnect = async (port: string) => {
     setConnectionError(null);
@@ -200,6 +185,8 @@ export default function App() {
             isConnected={isConnected}
             machineState={machineState}
             customPresets={customPresets}
+            onTorqueOff={torqueOff}
+            onTorqueOn={torqueOn}
           />
         </div>
 
@@ -251,6 +238,8 @@ export default function App() {
               positions={machineState?.positions || [0, 0, 0, 0]}
               sensors={machineState?.sensors || [0, 0, 0, 0]}
               isConnected={isConnected}
+              machineStatus={machineState?.machine_status}
+              forceTargets={machineState?.force_targets}
               onGotoCommand={handleGoto}
               graphSensorIdx={selectedSensorIdx}
               onSensorSelect={setSelectedSensorIdx}
@@ -265,8 +254,8 @@ export default function App() {
       {advanced && (
         <div className="mt-6">
           <SerialMonitor
-            logs={serialLogs}
-            onClear={() => setSerialLogs([])}
+            logs={logs}
+            onClear={clearLogs}
             onSendCommand={sendManualCommand}
             onRefreshLogs={refreshLogs}
             isLoading={isLoading}
