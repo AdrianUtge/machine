@@ -175,6 +175,34 @@ static void dxlGotoMm(uint8_t table, float mm) {
     dxl.setGoalPosition(g_dxlIds[table], mm * DXL_PER_MM);
 }
 
+// LED Dynamixel = feedback visuel du mode : RUNNING -> clignotement,
+// tout autre mode (IDLE/READY/...) -> allumées fixe (statique).
+// On n'écrit sur le bus qu'au toggle ou au changement de mode (pas de spam).
+static void updateDxlLeds() {
+    static const uint32_t BLINK_PERIOD_MS = 250;
+    static uint32_t lastToggleMs = 0;
+    static bool     blinkOn = false;
+    static Mode     lastMode = Mode::ERROR;   // != au 1er passage -> force un refresh
+
+    if (g_mode == Mode::RUNNING) {
+        uint32_t now = millis();
+        if (lastMode != Mode::RUNNING || now - lastToggleMs >= BLINK_PERIOD_MS) {
+            lastToggleMs = now;
+            blinkOn = !blinkOn;
+            for (uint8_t i = 0; i < g_dxlCount; i++) {
+                if (blinkOn) dxl.ledOn(g_dxlIds[i]);
+                else         dxl.ledOff(g_dxlIds[i]);
+            }
+        }
+        lastMode = Mode::RUNNING;
+    } else if (lastMode != g_mode) {
+        // Entrée dans un mode non-RUNNING : allumer fixe, une seule fois.
+        for (uint8_t i = 0; i < g_dxlCount; i++) dxl.ledOn(g_dxlIds[i]);
+        lastMode = g_mode;
+        blinkOn  = true;
+    }
+}
+
 // ===== Protocole : sorties =================================================
 
 static const char* modeStr() {
@@ -364,6 +392,9 @@ void loop() {
         lastStreamMs = now;
         sendStatus();
     }
+
+    // Feedback LED : clignotement en RUNNING, fixe sinon.
+    updateDxlLeds();
 
     // ÉTAPE 2 (à venir) : si Mode::RUNNING, au point bas faire un burst de 10
     // mesures par cellule, comparer aux consignes g_forceTarget[], descendre
