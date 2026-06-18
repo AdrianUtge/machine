@@ -334,6 +334,12 @@ static void updateForceLoop() {
                 g_forcePeakCycle[i] = g_force[i];
                 g_forcePeakStepCountCycle = g_stepCount;
             }
+
+            // Garde-fou sécurité : vérifier PENDANT la fenêtre (seul moment où g_force est valide)
+            if (g_force[i] > FORCE_MAX_N) {
+                handleHardReset();
+                return;
+            }
         }
 
         lastInForceWindow = true;
@@ -359,14 +365,6 @@ static void updateForceLoop() {
     }
 
     lastInForceWindow = false;
-
-    // Garde-fou sécurité
-    for (uint8_t i = 0; i < N_TABLES; i++) {
-        if (g_force[i] > FORCE_MAX_N) {
-            handleHardReset();
-            return;
-        }
-    }
 }
 
 // ===== Protocole : sorties =================================================
