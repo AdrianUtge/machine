@@ -253,6 +253,35 @@ class WiFiLink:
                     table, position = 1, 0.0
                 return self.send_command('GOTO', position=position, table=table)
 
+            # BLINK_MOTOR: "BLINK_MOTOR:<motor_id>:<duration_ms>"
+            if key == 'BLINK_MOTOR' and ':' in value:
+                motor_str, _, duration_str = value.partition(":")
+                try:
+                    motor_id = int(motor_str.strip())
+                    duration_ms = int(duration_str.strip()) if duration_str.strip() else 500
+                except ValueError:
+                    motor_id, duration_ms = 0, 500
+                return self.send_command('MOTOR_BLINK', motor_id=motor_id, duration_ms=duration_ms)
+
+            # SET_RESISTANCE: "SET_RESISTANCE:<resistance_ohm>" or "SET_RESISTANCE:<board_id>:<resistance_ohm>"
+            if key == 'SET_RESISTANCE' and ':' in value:
+                parts = value.split(':')
+                if len(parts) == 2:
+                    # Format: <resistance_ohm>
+                    try:
+                        resistance_ohm = int(parts[0].strip())
+                        return self.send_command('SET_RESISTANCE', resistance_ohm=resistance_ohm, board_id=None)
+                    except ValueError:
+                        return False
+                elif len(parts) >= 2:
+                    # Format: <board_id>:<resistance_ohm>
+                    try:
+                        board_id = int(parts[0].strip())
+                        resistance_ohm = int(parts[1].strip())
+                        return self.send_command('SET_RESISTANCE', resistance_ohm=resistance_ohm, board_id=board_id)
+                    except ValueError:
+                        return False
+
             # name -> (REST command, json field, value caster)
             colon_map = {
                 'SET_FREQ': ('FREQUENCY', 'frequency', float),
