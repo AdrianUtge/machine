@@ -21,13 +21,14 @@
  * ===========================================================================
  */
 import { useState, useEffect } from 'react';
-import { AlertTriangle, SlidersHorizontal } from 'lucide-react';
+import { AlertTriangle, SlidersHorizontal, Settings as SettingsIcon } from 'lucide-react';
 import ConnectionScreen from './components/ConnectionScreen';
 import MotionControl from './components/MotionControl';
 import StatusPanelSimple from './components/StatusPanelSimple';
 import SerialMonitor from './components/SerialMonitor';
 import PositionsAndSensors from './components/PositionsAndSensors';
 import ForceGraph from './components/ForceGraph';
+import Settings from './components/Settings';
 import { useMachineController } from './hooks/useMachineController';
 
 export default function App() {
@@ -55,6 +56,8 @@ export default function App() {
     torqueOff,
     torqueOn,
     latencyMs,
+    blinkMotor,
+    setResistance,
   } = useMachineController();
 
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
@@ -65,6 +68,7 @@ export default function App() {
   const [selectedSensorIdx, setSelectedSensorIdx] = useState<number | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [selectedSensors, setSelectedSensors] = useState<number[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
 
   // Load available ports on mount and when needed
   useEffect(() => {
@@ -179,6 +183,17 @@ export default function App() {
             </div>
           )}
 
+          {/* Settings button */}
+          <button
+            onClick={() => setShowSettings(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors font-semibold"
+            title="Machine settings (motor identification, calibration)"
+            disabled={!isConnected}
+          >
+            <SettingsIcon size={18} />
+            Settings
+          </button>
+
           {/* Advanced toggle */}
           <button
             onClick={() => setAdvanced((v) => !v)}
@@ -285,6 +300,17 @@ export default function App() {
             isLoading={isLoading}
           />
         </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <Settings
+          isConnected={isConnected}
+          onClose={() => setShowSettings(false)}
+          onBlinkMotor={blinkMotor}
+          onSetResistance={setResistance}
+          currentResistance={30}  // TODO: get from machineState or backend
+        />
       )}
     </div>
   );

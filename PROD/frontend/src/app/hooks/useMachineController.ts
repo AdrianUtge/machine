@@ -332,6 +332,16 @@ export const useMachineController = () => {
     [sendCommand]
   );
 
+  const blinkMotor = useCallback((motorId: number, durationMs: number = 500) =>
+    sendCommand('/settings/blink-motor', { motor_id: motorId, duration_ms: durationMs }),
+    [sendCommand]
+  );
+
+  const setResistance = useCallback((resistanceOhm: number) =>
+    sendCommand('/settings/set-resistance', { resistance_ohm: resistanceOhm }),
+    [sendCommand]
+  );
+
   // --- Custom presets (frequency + force), persisted server-side ---------
 
   const loadPresets = useCallback(async () => {
@@ -530,6 +540,8 @@ export const useMachineController = () => {
     sendManualCommand,
     torqueOff,
     torqueOn,
+    blinkMotor,
+    setResistance,
 
     // Custom presets (frequency + force)
     customPresets,
