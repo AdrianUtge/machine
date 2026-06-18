@@ -105,8 +105,8 @@ static void pumpOpenRB() {
             buf += c;
         } else {
             // Buffer plein → jetter le buffer pour éviter corruption
-            Serial.print("[OpenRB] ⚠️ Buffer overflow, jettant: ");
-            Serial.println(buf);
+            // Serial.print("[OpenRB] ⚠️ Buffer overflow, jettant: ");
+            // Serial.println(buf);
             buf = "";
             buf += c;  // Commencer une nouvelle ligne
         }
@@ -114,8 +114,8 @@ static void pumpOpenRB() {
 
     // Timeout : si 200 ms sans données, jetter le buffer incomplet
     if (buf.length() > 0 && (millis() - lastCharMs > 200)) {
-        Serial.print("[OpenRB] ⚠️ Timeout buffer, jettant: ");
-        Serial.println(buf);
+        // Serial.print("[OpenRB] ⚠️ Timeout buffer, jettant: ");
+        // Serial.println(buf);
         buf = "";
     }
 }
@@ -142,35 +142,35 @@ void addCORSHeaders() {
 void handleCORSPreflight() {
     addCORSHeaders();
     server.send(204);  // No Content
-    Serial.print("[CORS] Preflight OPTIONS handled for: ");
-    Serial.println(server.uri());
+    // Serial.print("[CORS] Preflight OPTIONS handled for: ");
+    // Serial.println(server.uri());
 }
 
 // ===== Fonction auxiliaire: Vérifier le token Bearer =====
 bool verifyAuthToken() {
     if (!server.hasHeader("Authorization")) {
-        Serial.println("[AUTH] ❌ Missing Authorization header");
+        // Serial.println("[AUTH] ❌ Missing Authorization header");
         return false;
     }
 
     String authHeader = server.header("Authorization");
     String expectedAuth = String("Bearer ") + String(AUTH_TOKEN);
 
-    Serial.print("[AUTH] Received: ");
-    Serial.println(authHeader);
-    Serial.print("[AUTH] Expected: ");
-    Serial.println(expectedAuth);
+    // Serial.print("[AUTH] Received: ");
+    // Serial.println(authHeader);
+    // Serial.print("[AUTH] Expected: ");
+    // Serial.println(expectedAuth);
 
     bool valid = (authHeader == expectedAuth);
 
     if (!valid) {
-        Serial.println("[AUTH] ❌ Token mismatch!");
-        Serial.print("[AUTH] Received length: ");
-        Serial.print(authHeader.length());
-        Serial.print(" vs Expected length: ");
-        Serial.println(expectedAuth.length());
+        // Serial.println("[AUTH] ❌ Token mismatch!");
+        // Serial.print("[AUTH] Received length: ");
+        // Serial.print(authHeader.length());
+        // Serial.print(" vs Expected length: ");
+        // Serial.println(expectedAuth.length());
     } else {
-        Serial.println("[AUTH] ✅ Token valid");
+        // Serial.println("[AUTH] ✅ Token valid");
     }
 
     return valid;
@@ -185,7 +185,7 @@ void handleStatus() {
         return;
     }
 
-    Serial.println("[REST] GET /api/status");
+    // Serial.println("[REST] GET /api/status");
 
     StaticJsonDocument<640> doc;
     doc["status"] = "ok";
@@ -213,7 +213,7 @@ void handleStatus() {
     serializeJson(doc, response);
     server.send(200, "application/json", response);
 
-    Serial.println("[REST] Status sent");
+    // Serial.println("[REST] Status sent");
 }
 
 // ===== OpenRB-150 : mapping commande JSON -> protocole ligne =====
@@ -267,10 +267,10 @@ void handleCommand() {
         return;
     }
 
-    Serial.println("[REST] POST /api/command — auth OK, traitement de la commande");
+    // Serial.println("[REST] POST /api/command — auth OK, traitement de la commande");
 
     if (server.method() != HTTP_POST) {
-        Serial.println("[REST] ❌ Méthode non autorisée");
+        // Serial.println("[REST] ❌ Méthode non autorisée");
         server.send(405, "application/json", "{\"error\":\"Method not allowed\"}");
         return;
     }
@@ -279,11 +279,11 @@ void handleCommand() {
     // collecte par défaut que les en-têtes Authorization et ETag, donc ce test
     // renvoyait toujours un 400 et la commande n'était jamais loggée.
     String body = server.arg("plain");
-    Serial.print("[REST] Corps reçu: ");
-    Serial.println(body);
+    // Serial.print("[REST] Corps reçu: ");
+    // Serial.println(body);
 
     if (body.length() == 0) {
-        Serial.println("[REST] ❌ Corps vide (pas de JSON)");
+        // Serial.println("[REST] ❌ Corps vide (pas de JSON)");
         server.send(400, "application/json", "{\"error\":\"Empty body\"}");
         return;
     }
@@ -292,13 +292,13 @@ void handleCommand() {
     DeserializationError error = deserializeJson(doc, body);
 
     if (error) {
-        Serial.println("[REST] ❌ Invalid JSON");
+        // Serial.println("[REST] ❌ Invalid JSON");
         server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
 
     if (!doc.containsKey("command")) {
-        Serial.println("[REST] ❌ Missing command field");
+        // Serial.println("[REST] ❌ Missing command field");
         server.send(400, "application/json", "{\"error\":\"Missing command field\"}");
         return;
     }
@@ -323,8 +323,8 @@ void handleCommand() {
     }
 
     if (!isValid) {
-        Serial.print("[CMD] ❌ Unknown command: ");
-        Serial.println(command);
+        // Serial.print("[CMD] ❌ Unknown command: ");
+        // Serial.println(command);
         server.send(400, "application/json", "{\"error\":\"Unknown command\"}");
         return;
     }
@@ -353,55 +353,55 @@ void handleCommand() {
 
     // Log the command
     state.commandCount++;
-    Serial.println("\n╔════════════════════════════════════════╗");
-    Serial.print("║ [CMD #");
-    Serial.print(state.commandCount);
-    Serial.println("] Command received");
-    Serial.print("║ Command: ");
-    Serial.println(command);
+    // Serial.println("\n╔════════════════════════════════════════╗");
+    // Serial.print("║ [CMD #");
+    // Serial.print(state.commandCount);
+    // Serial.println("] Command received");
+    // Serial.print("║ Command: ");
+    // Serial.println(command);
 
-    // Log parameters if provided
-    if (doc.containsKey("frequency")) {
-        Serial.print("║ Frequency: ");
-        Serial.print(doc["frequency"].as<float>());
-        Serial.println(" Hz");
-    }
-    if (doc.containsKey("speed")) {
-        Serial.print("║ Speed: ");
-        Serial.print(doc["speed"].as<int>());
-        Serial.println(" %");
-    }
-    if (doc.containsKey("force")) {
-        Serial.print("║ Force: ");
-        Serial.print(doc["force"].as<float>());
-        Serial.println(" N");
-    }
-    if (doc.containsKey("sensor")) {
-        Serial.print("║ Cell (sensor): ");
-        Serial.println(doc["sensor"].as<int>());
-    }
-    if (doc.containsKey("table")) {
-        Serial.print("║ Table: ");
-        Serial.println(doc["table"].as<int>());
-    }
-    if (doc.containsKey("position")) {
-        Serial.print("║ Position: ");
-        Serial.print(doc["position"].as<float>());
-        Serial.println(" mm");
-    }
-    if (doc.containsKey("preset")) {
-        Serial.print("║ Preset: ");
-        Serial.println(doc["preset"].as<String>());
-    }
-    if (doc.containsKey("command_data")) {
-        Serial.print("║ Data: ");
-        Serial.println(doc["command_data"].as<String>());
-    }
+    // // Log parameters if provided
+    // if (doc.containsKey("frequency")) {
+    //     Serial.print("║ Frequency: ");
+    //     Serial.print(doc["frequency"].as<float>());
+    //     Serial.println(" Hz");
+    // }
+    // if (doc.containsKey("speed")) {
+    //     Serial.print("║ Speed: ");
+    //     Serial.print(doc["speed"].as<int>());
+    //     Serial.println(" %");
+    // }
+    // if (doc.containsKey("force")) {
+    //     Serial.print("║ Force: ");
+    //     Serial.print(doc["force"].as<float>());
+    //     Serial.println(" N");
+    // }
+    // if (doc.containsKey("sensor")) {
+    //     Serial.print("║ Cell (sensor): ");
+    //     Serial.println(doc["sensor"].as<int>());
+    // }
+    // if (doc.containsKey("table")) {
+    //     Serial.print("║ Table: ");
+    //     Serial.println(doc["table"].as<int>());
+    // }
+    // if (doc.containsKey("position")) {
+    //     Serial.print("║ Position: ");
+    //     Serial.print(doc["position"].as<float>());
+    //     Serial.println(" mm");
+    // }
+    // if (doc.containsKey("preset")) {
+    //     Serial.print("║ Preset: ");
+    //     Serial.println(doc["preset"].as<String>());
+    // }
+    // if (doc.containsKey("command_data")) {
+    //     Serial.print("║ Data: ");
+    //     Serial.println(doc["command_data"].as<String>());
+    // }
 
-    Serial.print("║ Timestamp: ");
-    Serial.print(millis());
-    Serial.println(" ms");
-    Serial.println("╚════════════════════════════════════════╝\n");
+    // Serial.print("║ Timestamp: ");
+    // Serial.print(millis());
+    // Serial.println(" ms");
+    // Serial.println("╚════════════════════════════════════════╝\n");
 
     // Phase 2 : transmettre à l'OpenRB-150 et collecter ses réponses
     StaticJsonDocument<768> response;
@@ -420,7 +420,7 @@ void handleCommand() {
     serializeJson(response, responseStr);
     server.send(200, "application/json", responseStr);
 
-    Serial.println("[REST] ✅ Response sent");
+    // Serial.println("[REST] ✅ Response sent");
 }
 
 // ===== Gestion des requêtes non trouvées =====
@@ -432,16 +432,16 @@ void handleNotFound() {
     }
 
     addCORSHeaders();  // CORS aussi sur les 404
-    Serial.print("[HTTP] 404 - Path: ");
-    Serial.println(server.uri());
+    // Serial.print("[HTTP] 404 - Path: ");
+    // Serial.println(server.uri());
     server.send(404, "application/json",
         "{\"error\":\"Not found\",\"path\":\"" + server.uri() + "\"}");
 }
 
 // ===== Initialisation WiFi (AP Mode) =====
 bool setupWiFi() {
-    Serial.print("\n[WiFi] Starting Access Point: ");
-    Serial.println(WIFI_SSID);
+    // Serial.print("\n[WiFi] Starting Access Point: ");
+    // Serial.println(WIFI_SSID);
 
     // Mode AP (Access Point) - l'ESP8266 broadcast son propre réseau
     WiFi.mode(WIFI_AP);
@@ -452,14 +452,14 @@ bool setupWiFi() {
         return false;
     }
 
-    Serial.println("[WiFi] ✓ Access Point started!");
-    Serial.print("[WiFi] SSID: ");
-    Serial.println(WIFI_SSID);
-    Serial.print("[WiFi] IP Address: ");
-    Serial.println(WiFi.softAPIP());
-    Serial.print("[WiFi] Gateway: ");
-    Serial.println(WiFi.softAPIP());
-    Serial.println("[WiFi] Password: " WIFI_PASSWORD);
+    // Serial.println("[WiFi] ✓ Access Point started!");
+    // Serial.print("[WiFi] SSID: ");
+    // Serial.println(WIFI_SSID);
+    // Serial.print("[WiFi] IP Address: ");
+    // Serial.println(WiFi.softAPIP());
+    // Serial.print("[WiFi] Gateway: ");
+    // Serial.println(WiFi.softAPIP());
+    // Serial.println("[WiFi] Password: " WIFI_PASSWORD);
 
     return true;
 }
@@ -473,8 +473,8 @@ void setupServer() {
     server.onNotFound(handleNotFound);
 
     server.begin();
-    Serial.print("[Server] HTTP server started on port ");
-    Serial.println(HTTP_PORT);
+    // Serial.print("[Server] HTTP server started on port ");
+    // Serial.println(HTTP_PORT);
 }
 
 // ===== Setup principal =====
@@ -493,9 +493,9 @@ void setup() {
 
     // Lien série vers l'OpenRB-150
     openrb.begin(OPENRB_BAUD);
-    Serial.print("[OpenRB] SoftwareSerial @ ");
-    Serial.print(OPENRB_BAUD);
-    Serial.println(" baud (RX=GPIO14, TX=GPIO12)");
+    // Serial.print("[OpenRB] SoftwareSerial @ ");
+    // Serial.print(OPENRB_BAUD);
+    // Serial.println(" baud (RX=GPIO14, TX=GPIO12)");
 
     // WiFi
     if (!setupWiFi()) {
@@ -510,23 +510,23 @@ void setup() {
     // Serveur HTTP
     setupServer();
 
-    Serial.println("\n[Boot] ✓ Ready to receive commands via REST API");
-    Serial.println("[Boot] ═════════════════════════════════════════");
-    Serial.print("[Boot] SSID: ");
-    Serial.println(WIFI_SSID);
-    Serial.print("[Boot] Password: ");
-    Serial.println(WIFI_PASSWORD);
-    Serial.print("[Boot] IP: http://");
-    Serial.print(WiFi.softAPIP());
-    Serial.print(":");
-    Serial.println(HTTP_PORT);
-    Serial.print("[Boot] Auth Token: ");
-    Serial.println(AUTH_TOKEN);
-    Serial.println("[Boot] ═════════════════════════════════════════");
-    Serial.println("[Boot] Connect your PC to this WiFi network");
-    Serial.println("[Boot] Then access the REST API at the IP above");
-    Serial.println("[Boot] Use the Auth Token above for API requests");
-    Serial.println("[Boot] All commands will be logged here\n");
+    // Serial.println("\n[Boot] ✓ Ready to receive commands via REST API");
+    // Serial.println("[Boot] ═════════════════════════════════════════");
+    // Serial.print("[Boot] SSID: ");
+    // Serial.println(WIFI_SSID);
+    // Serial.print("[Boot] Password: ");
+    // Serial.println(WIFI_PASSWORD);
+    // Serial.print("[Boot] IP: http://");
+    // Serial.print(WiFi.softAPIP());
+    // Serial.print(":");
+    // Serial.println(HTTP_PORT);
+    // Serial.print("[Boot] Auth Token: ");
+    // Serial.println(AUTH_TOKEN);
+    // Serial.println("[Boot] ═════════════════════════════════════════");
+    // Serial.println("[Boot] Connect your PC to this WiFi network");
+    // Serial.println("[Boot] Then access the REST API at the IP above");
+    // Serial.println("[Boot] Use the Auth Token above for API requests");
+    // Serial.println("[Boot] All commands will be logged here\n");
 }
 
 // ===== Loop principal =====
