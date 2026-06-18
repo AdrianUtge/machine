@@ -55,12 +55,19 @@ def cmd_set_speed(speed_percent: int) -> str:
     return f"SET_SPEED:{speed_percent}"
 
 
-def cmd_set_force(force_n: float, sensor: int | None = None) -> str:
-    # Global (4 capteurs): "SET_FORCE:<force>"
-    # Par cellule (capteur 1-4): "SET_FORCE:<sensor>:<force>"
+def cmd_set_force(force_mv: float, sensor: int | None = None) -> str:
+    """
+    Send force setpoint to OpenRB (mV units, 0-3300).
+
+    Phase 1 (current): Backend converts Newton targets → mV via calibration before calling this.
+    OpenRB only works with mV (saves CPU power).
+
+    Global (4 cells): "SET_FORCE:<force_mV>"
+    Per-cell (1-4):   "SET_FORCE:<sensor>:<force_mV>"
+    """
     if sensor is None:
-        return f"SET_FORCE:{force_n}"
-    return f"SET_FORCE:{sensor}:{force_n}"
+        return f"SET_FORCE:{force_mv}"
+    return f"SET_FORCE:{sensor}:{force_mv}"
 
 
 def cmd_get_status() -> str:

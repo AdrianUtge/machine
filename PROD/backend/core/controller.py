@@ -107,6 +107,10 @@ class MachineController:
             self.state.force_targets[sensor - 1] = force_n
         self._send(cmd_set_force(force_n, sensor))
 
+    def set_force_mV(self, force_mv: float, sensor: int | None = None) -> None:
+        """Send mV force setpoint to OpenRB (state already updated by caller)."""
+        self._send(cmd_set_force(force_mv, sensor))
+
     def apply_preset(self, preset_key: str) -> bool:
         if preset_key not in PRESETS:
             return False

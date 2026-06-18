@@ -157,6 +157,71 @@ class CalibrationManager:
         # Fallback (ne devrait pas arriver ici)
         return pts[-1][1]
 
+    def newton_to_mV(self, cell: int, newton: float) -> float:
+        """
+        Convertit une force (N) en tension (mV) pour une cellule (inverse calibration).
+
+        - Interpolation linéaire entre points calibrés
+        - Extrapolation linéaire au-delà du dernier point
+        - Clamp à [0, 3300] mV (limites ADC)
+        - Sans calibration : retourne newton (passthrough)
+
+        Args:
+            cell : ID cellule (0-3)
+            newton : Force en Newtons
+
+        Returns:
+            Tension en millivolts (0-3300)
+        """
+        if cell < 0 or cell > 3:
+            return newton
+
+        pts = self.calibration_points[cell]
+
+        # Pas de calibration → passthrough
+        if not pts:
+            return newton
+
+        # Un seul point → retourner sa tension
+        if len(pts) == 1:
+            return pts[0][0]
+
+        # Newton en dessous du premier point → borne basse
+        if newton <= pts[0][1]:
+            return pts[0][0]
+
+        # Newton au-delà du dernier point → extrapoler
+        if newton >= pts[-1][1]:
+            v_last, n_last = pts[-1]
+            v_prev, n_prev = pts[-2]
+
+            # Pente inverse du dernier segment (mV/N au lieu de N/mV)
+            if n_last == n_prev:
+                pente_inv = 0.0
+            else:
+                pente_inv = (v_last - v_prev) / (n_last - n_prev)
+
+            # Extrapolation linéaire
+            mv_extrap = v_last + pente_inv * (newton - n_last)
+
+            # Clamp à [0, 3300] mV (limites ADC 12-bit)
+            return max(0.0, min(mv_extrap, 3300.0))
+
+        # Entre deux points → interpolation linéaire (inverse)
+        for i in range(1, len(pts)):
+            v0, n0 = pts[i - 1]
+            v1, n1 = pts[i]
+
+            if newton <= n1:
+                if n1 == n0:
+                    return v0
+                # Interpolation inverse
+                t = (newton - n0) / (n1 - n0)
+                return v0 + t * (v1 - v0)
+
+        # Fallback (ne devrait pas arriver ici)
+        return pts[-1][0]
+
     def get_info(self) -> Dict:
         """Retourne des infos sur la calibration chargée."""
         return {
@@ -191,6 +256,13 @@ def mV_to_newton(cell: int, mv: float) -> float:
     if _manager is None:
         return mv
     return _manager.mV_to_newton(cell, mv)
+
+
+def newton_to_mV(cell: int, newton: float) -> float:
+    """Fonction helper pour convertir N → mV (utilise l'instance globale)."""
+    if _manager is None:
+        return newton
+    return _manager.newton_to_mV(cell, newton)
 
 
 def get_info() -> Dict:

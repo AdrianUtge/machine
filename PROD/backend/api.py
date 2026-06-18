@@ -619,15 +619,33 @@ def set_speed(request: SpeedRequest):
 
 @app.post("/api/command/force")
 def set_force(request: ForceRequest):
-    """Set force target (N)."""
+    """Set force target (N). Converts to mV before sending to OpenRB."""
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
 
-    controller.set_force(request.force, request.sensor)
+    # Convert Newton targets to mV using calibration (Phase 1: backend handles conversion)
     if request.sensor is None:
-        log_action("command", f"SET_FORCE:{request.force}")
+        # Global force: convert for all 4 cells (use first cell as reference)
+        force_mv = force_cal.newton_to_mV(0, request.force)
     else:
-        log_action("command", f"SET_FORCE[cell {request.sensor}]:{request.force}")
+        # Per-cell force: convert for that specific cell
+        cell_idx = request.sensor - 1
+        force_mv = force_cal.newton_to_mV(cell_idx, request.force)
+
+    # Store Newton targets in state (for UI display)
+    if request.sensor is None:
+        controller.state.force_target = request.force
+        controller.state.force_targets = [request.force] * 4
+    elif 1 <= request.sensor <= 4:
+        controller.state.force_targets[request.sensor - 1] = request.force
+
+    # Send mV setpoint to OpenRB
+    controller.set_force_mV(force_mv, request.sensor)
+
+    if request.sensor is None:
+        log_action("command", f"SET_FORCE:{request.force} N (→ {force_mv:.1f} mV)")
+    else:
+        log_action("command", f"SET_FORCE[cell {request.sensor}]:{request.force} N (→ {force_mv:.1f} mV)")
     _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
