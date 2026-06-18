@@ -45,12 +45,13 @@ _DEFAULTS = {
         "ip": "192.168.4.1",
         "port": "8080",
         "protocol": "http",
-        "key": "",
+        "key": "1276371237612hj1h12387dsads8912",
         "timeout": "2",
     },
     "serial": {"port": "auto", "baudrate": "115200", "timeout": "1"},
     "esp8266": {"http_port": "8080"},
     "logging": {"level": "INFO"},
+    "calibration": {"resistance": "330"},
 }
 
 # Cache module : on ne lit le fichier qu'une fois par process.
@@ -155,6 +156,12 @@ def serial() -> dict:
 
 def log_level() -> str:
     return get("logging", "level", "INFO").upper()
+
+
+def calibration() -> dict:
+    return {
+        "resistance": get_int("calibration", "resistance", 330),
+    }
 
 
 def as_nested_dict() -> dict:

@@ -47,9 +47,12 @@ static const float   F_ROTATION_MAX = 10.0f; // Hz (spec banc)
 // --- Cellules de force (INA125 -> ADC) ---
 static const uint8_t FORCE_PINS[4] = { A1, A2, A3, A4 };
 static const uint8_t FORCE_BURST   = 10;     // échantillons moyennés / mesure (anti-bruit)
-// Calibration ADC -> Newton (PLACEHOLDER — à régler avec ton capteur 50 N) :
-static float  FORCE_GAIN[4]   = { 1.0f, 1.0f, 1.0f, 1.0f };  // N par count ADC
-static float  FORCE_OFFSET[4] = { 0.0f, 0.0f, 0.0f, 0.0f };  // count ADC à vide (tare)
+static const float   ADC_VREF = 3300.0f;     // Tension de référence ADC (mV) — SAMD21
+static const float   ADC_RESOLUTION = 4096.0f; // 12-bit ADC (0 → 4095)
+// Phase 1 : envoyer mV bruts au backend (calibration là-bas)
+// Phase 2 : FORCE_GAIN/OFFSET seront reçus du backend via protocole
+static float  FORCE_GAIN[4]   = { 1.0f, 1.0f, 1.0f, 1.0f };  // N par count ADC (Phase 2)
+static float  FORCE_OFFSET[4] = { 0.0f, 0.0f, 0.0f, 0.0f };  // count ADC à vide (Phase 2)
 static const float FORCE_MAX_N = 49.0f;      // garde-fou capteur (cellule 50 N) — ÉTAPE 2
 
 // --- Dynamixel (tables) ---
@@ -137,6 +140,17 @@ static void stepperSetFrequency(float fRot) {
 
 // ===== Force : lecture INA125 (moyenne d'un burst) =========================
 
+// Phase 1 : envoie les mV bruts au backend (calibration là-bas)
+static float readForcemV(uint8_t cell) {
+    uint32_t acc = 0;
+    for (uint8_t i = 0; i < FORCE_BURST; i++) acc += analogRead(FORCE_PINS[cell]);
+    float counts = (float)acc / FORCE_BURST;
+    // Convertir ADC counts -> mV
+    // mV = (counts / 4096) × VREF_mV
+    return (counts / ADC_RESOLUTION) * ADC_VREF;
+}
+
+// Phase 2 : sera utilisé pour la boucle fermée locale (après réception calibration du backend)
 static float readForceN(uint8_t cell) {
     uint32_t acc = 0;
     for (uint8_t i = 0; i < FORCE_BURST; i++) acc += analogRead(FORCE_PINS[cell]);
@@ -145,7 +159,8 @@ static float readForceN(uint8_t cell) {
 }
 
 static void readAllForces() {
-    for (uint8_t i = 0; i < N_TABLES; i++) g_force[i] = readForceN(i);
+    // Phase 1 : envoyer mV bruts
+    for (uint8_t i = 0; i < N_TABLES; i++) g_force[i] = readForcemV(i);
 }
 
 // ===== Dynamixel ===========================================================
@@ -233,10 +248,12 @@ static void sendStatus() {
     }
     LINK.println();
 
-    // 4 forces séparées par des virgules
-    LINK.print("FORCE:");
+    // 4 tensions en mV (brutes du ADC, pas converties en Newton)
+    // Phase 1 : backend fait la calibration mV -> N
+    // Phase 2 : firmware recevra la table de calibration et l'appliquera localement
+    LINK.print("VOLT:");
     for (uint8_t i = 0; i < N_TABLES; i++) {
-        LINK.print(g_force[i], 3);
+        LINK.print(g_force[i], 1);
         if (i < N_TABLES - 1) LINK.print(',');
     }
     LINK.println();

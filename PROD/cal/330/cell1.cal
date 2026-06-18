@@ -1,0 +1,21 @@
+# Calibration cellule de force 1 — INA125 avec Rg = 330 ohm
+#
+# Format : <tension_mV> <force_newtons>
+#   - Données calibrées : 0 → 22 N (machine de calibration)
+#   - Au-delà de 22 N : extrapolation linéaire jusqu'à 50 N
+#   - Interpolation linéaire entre points, clamp à 50 N max
+#
+# Source : migration de cal_330.txt (convertir volts → millivolts)
+
+# mV      newtons
+61.0     0.00
+92.0     3.36
+115.9    5.03
+136.2    6.12
+174.6    8.07
+210.9    10.20
+252.4    12.08
+282.0    14.04
+316.9    16.30
+357.0    18.08
+388.4    20.20

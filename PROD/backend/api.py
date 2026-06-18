@@ -46,6 +46,7 @@ import time
 
 from comm.serial_link import SerialLink
 from comm.wifi_link import WiFiLink
+from comm import force_cal
 from config import DEFAULT_BAUDRATE, DEFAULT_PORT, DEFAULT_TIMEOUT
 from core.controller import MachineController
 from core.state import MachineState
@@ -53,6 +54,7 @@ from core import preset_store
 from debug.logger import DebugLogger
 from debug.logging_setup import get_logger
 from comm.ports import choose_serial_port
+import machine_config
 import sys
 import os
 from pathlib import Path
@@ -120,7 +122,9 @@ class MachineStateResponse(BaseModel):
     force_target: Optional[float]
     force_targets: list[float]
     positions: list[float]
-    sensors: list[float]
+    sensors: list[float]  # DEPRECATED: utiliser cell_forces_N
+    cell_volts_mv: list[float]  # Tensions brutes de l'OpenRB (mV)
+    cell_forces_N: list[float]  # Forces calculées via calibration (Newton)
     motor_current: Optional[str]
     errors: str
     slave_status: str
@@ -254,6 +258,13 @@ def get_state_dict(state: MachineState) -> MachineStateResponse:
     else:
         slave_status = "OFFLINE"
 
+    # Convertir les tensions brutes (mV) en forces (N) via calibration
+    # state.sensors contient les mV bruts reçus de l'OpenRB
+    cell_forces_N = []
+    for cell_id, mv in enumerate(state.sensors):
+        force_n = force_cal.mV_to_newton(cell_id, mv)
+        cell_forces_N.append(force_n)
+
     return MachineStateResponse(
         preset_name=state.preset_name,
         frequency_hz=state.frequency_hz,
@@ -261,7 +272,9 @@ def get_state_dict(state: MachineState) -> MachineStateResponse:
         force_target=state.force_target,
         force_targets=state.force_targets,
         positions=state.positions,
-        sensors=state.sensors,
+        sensors=state.sensors,  # Gardé pour compat (ancien champ)
+        cell_volts_mv=state.sensors,  # mV bruts
+        cell_forces_N=cell_forces_N,  # Forces converties
         motor_current=state.motor_current,
         errors=state.errors,
         slave_status=slave_status,
@@ -333,17 +346,21 @@ def connect(request: ConnectRequest):
                           nodeMcu_config.get('ip'), nodeMcu_config.get('port'),
                           '(défini)' if nodeMcu_config.get('key') else '(VIDE)')
 
-                # IP/port/jeton depuis le .ini (défauts AP usine si vraiment absents).
+                # IP/port depuis le .ini (défauts AP usine si vraiment absents).
                 ip = nodeMcu_config.get('ip') or '192.168.4.1'
                 port = nodeMcu_config.get('port') or 8080
-                key = nodeMcu_config.get('key', '')
 
-                if not key:
-                    log.warning("[WiFi] Aucun jeton ([nodemcu].key) dans .machine_config.ini — "
-                                "l'ESP renverra 401. Renseignez la clé puis relancez.")
+                # ⚠️ HARDCODE TEMPORAIRE DU JETON — voir PROD/TODO.md (#1).
+                # La résolution du jeton depuis .machine_config.ini ne remonte pas
+                # correctement jusqu'à l'ESP dans l'environnement actuel (l'ESP
+                # recevait "bearer_token_secret"). On force la valeur attendue par
+                # le firmware pour débloquer le dev. À RETIRER une fois le bug
+                # de chargement de config résolu (réactiver la ligne ci-dessous).
+                # key = nodeMcu_config.get('key', '')
+                key = "1276371237612hj1h12387dsads8912"  # TODO(config): dé-hardcoder
 
-                log.info("[WiFi] Connexion ESP8266 %s:%s (jeton: %s)",
-                         ip, port, '*' * len(key) if key else 'AUCUN')
+                log.info("[WiFi] Connexion ESP8266 %s:%s (jeton: %s) [HARDCODE temporaire]",
+                         ip, port, '*' * len(key))
 
                 if not ip:
                     raise HTTPException(
@@ -752,6 +769,13 @@ def health_check():
         "connected": controller is not None and controller.state.machine_status == "CONNECTED"
     }
 
+
+@app.get("/api/calibration/info")
+def calibration_info():
+    """Retourne les infos de calibration (résistance, nombre de points, plages)."""
+    return force_cal.get_info()
+
+
 if __name__ == "__main__":
     import argparse
     import uvicorn
@@ -773,6 +797,11 @@ if __name__ == "__main__":
     level = setup_logging(verbose=args.verbose, level_name=level_name)
     log.info("Démarrage backend sur %s:%s (niveau de log: %s)",
              args.host, args.port, logging.getLevelName(level))
+
+    # Initialiser la calibration des cellules de force
+    cal_config = machine_config.calibration()
+    resistance = cal_config.get("resistance", 330)
+    force_cal.init_calibration(resistance)
 
     # uvicorn aligné sur notre niveau (DEBUG -> accès loggés par uvicorn aussi).
     uvicorn_level = "debug" if level <= logging.DEBUG else "info"
