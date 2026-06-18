@@ -48,7 +48,7 @@ static const float   F_ROTATION_MAX = 10.0f; // Hz (spec banc)
 static const uint8_t FORCE_PINS[4] = { A1, A2, A3, A4 };
 static const uint8_t FORCE_BURST   = 10;     // échantillons moyennés / mesure (anti-bruit)
 static const float   ADC_VREF = 3300.0f;     // Tension de référence ADC (mV) — SAMD21
-static const float   ADC_RESOLUTION = 4096.0f; // 12-bit ADC (0 → 4095)
+static const float   ADC_RESOLUTION_STEPS = 4096.0f; // 12-bit ADC (0 → 4095)
 // Phase 1 : envoyer mV bruts au backend (calibration là-bas)
 // Phase 2 : FORCE_GAIN/OFFSET seront reçus du backend via protocole
 static float  FORCE_GAIN[4]   = { 1.0f, 1.0f, 1.0f, 1.0f };  // N par count ADC (Phase 2)
@@ -196,7 +196,7 @@ static float readForcemV(uint8_t cell) {
     float counts = (float)acc / FORCE_BURST;
     // Convertir ADC counts -> mV
     // mV = (counts / 4096) × VREF_mV
-    return (counts / ADC_RESOLUTION) * ADC_VREF;
+    return (counts / ADC_RESOLUTION_STEPS) * ADC_VREF;
 }
 
 // Phase 2 : sera utilisé pour la boucle fermée locale (après réception calibration du backend)
@@ -269,6 +269,14 @@ static void updateDxlLeds() {
 
 // ===== ÉTAPE 2 : Boucle fermée de force ====================================
 
+// Forward declarations
+static void handleHardReset();
+
+struct ForceControl {
+    uint8_t phase;
+    float step_mm;
+};
+
 static bool isInForceWindow() {
     if (g_forceWindowStart <= g_forceWindowEnd) {
         return g_stepCount >= g_forceWindowStart && g_stepCount <= g_forceWindowEnd;
@@ -277,10 +285,7 @@ static bool isInForceWindow() {
     }
 }
 
-static struct {
-    uint8_t phase;
-    float step_mm;
-} getControlPhaseAndStep(uint8_t table_i, float current_mm, float target_force, float measured_force) {
+static ForceControl getControlPhaseAndStep(uint8_t table_i, float current_mm, float target_force, float measured_force) {
     float error = target_force - measured_force;
 
     if (current_mm > FINE_TUNE_ZONE_MM && error > FORCE_DEADBAND) {
