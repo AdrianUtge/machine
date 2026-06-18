@@ -266,8 +266,8 @@ class WiFiLink:
             # SET_RESISTANCE: "SET_RESISTANCE:<resistance_ohm>" or "SET_RESISTANCE:<board_id>:<resistance_ohm>"
             if key == 'SET_RESISTANCE' and ':' in value:
                 parts = value.split(':')
-                if len(parts) == 2:
-                    # Format: <resistance_ohm>
+                if len(parts) == 1:
+                    # Format: <resistance_ohm> (both boards)
                     try:
                         resistance_ohm = int(parts[0].strip())
                         return self.send_command('SET_RESISTANCE', resistance_ohm=resistance_ohm, board_id=None)
