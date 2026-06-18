@@ -264,7 +264,7 @@ class WiFiLink:
                 return self.send_command('MOTOR_BLINK', motor_id=motor_id, duration_ms=duration_ms)
 
             # SET_RESISTANCE: "SET_RESISTANCE:<resistance_ohm>" or "SET_RESISTANCE:<board_id>:<resistance_ohm>"
-            if key == 'SET_RESISTANCE' and ':' in value:
+            if key == 'SET_RESISTANCE':
                 parts = value.split(':')
                 if len(parts) == 1:
                     # Format: <resistance_ohm> (both boards)
