@@ -1,0 +1,47 @@
+# =============================================================================
+#  .gitignore — version PROD de la machine de test
+# =============================================================================
+
+# --- Secrets / configuration locale -----------------------------------------
+# L'unique source de secrets : ne JAMAIS committer (seul le .example l'est).
+.machine_config.ini
+# Header de secrets généré au build du firmware ESP8266 depuis le .ini.
+firmware/ESP8266/include/secrets.h
+
+# --- Données runtime (créées/éditées par l'app, non versionnées) ------------
+backend/preset.json
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# --- Frontend / Node --------------------------------------------------------
+node_modules/
+dist/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# --- PlatformIO / firmware --------------------------------------------------
+.pio/
+*.bak
+
+# --- Logs -------------------------------------------------------------------
+logs/
+*.log
+
+# --- IDE / OS ---------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store

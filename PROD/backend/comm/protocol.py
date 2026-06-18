@@ -1,0 +1,123 @@
+"""
+===============================================================================
+FILE: comm/protocol.py
+ROLE:
+    Construction des commandes texte (descendant) et parsing des réponses
+    (montant) du protocole ligne échangé avec l'OpenRB-150.
+
+ARCHITECTURE:
+    controller -> cmd_*()  -> "SET_FREQ:50.0"  -> lien -> ESP -> OpenRB
+    controller <- parse_response("FREQ:50.0", state) <- lien <- ESP <- OpenRB
+
+PROTOCOLE (résumé — voir docs/06_COMMUNICATION_PROTOCOL.md):
+    Descendant : HOME | START[:epoch_ms] | STOP | HARD_RESET |
+                 SET_FREQ:<hz> | SET_SPEED:<%> | SET_FORCE[:<cell>]:<n> |
+                 GOTO:<table>:<mm> | TORQUE_ON | TORQUE_OFF | GET_STATUS
+    Montant    : STATE:<mode> | FREQ:<hz> | POSITION:a,b,c,d | FORCE:a,b,c,d |
+                 SLAVE:ONLINE|OFFLINE | ACK:<cmd> | DONE:<cmd> | ERROR:<code>
+
+RESPONSIBILITIES:
+    - cmd_*()      : sérialise une commande en ligne texte.
+    - parse_response() : met à jour MachineState depuis une ligne reçue.
+
+MAINTAINER NOTES:
+    - Toute évolution du protocole DOIT rester synchrone avec l'ESP (main.cpp,
+      buildOpenRbLine/parseOpenRbLine) ET l'OpenRB (main.cpp, dispatch/sendStatus).
+===============================================================================
+"""
+
+from core.state import MachineState
+
+
+# --- Construction des commandes -----------------------------------------
+
+def cmd_home() -> str:
+    return "HOME"
+
+
+def cmd_start(start_time: int | None = None) -> str:
+    # Au START on envoie l'heure de début de cycle (epoch ms) au node,
+    # qui la mémorise et la renvoie ensuite: "START:<epoch_ms>".
+    if start_time is None:
+        return "START"
+    return f"START:{start_time}"
+
+
+def cmd_hard_reset() -> str:
+    return "HARD_RESET"
+
+
+def cmd_set_freq(freq_hz: float) -> str:
+    return f"SET_FREQ:{freq_hz}"
+
+
+def cmd_set_speed(speed_percent: int) -> str:
+    return f"SET_SPEED:{speed_percent}"
+
+
+def cmd_set_force(force_n: float, sensor: int | None = None) -> str:
+    # Global (4 capteurs): "SET_FORCE:<force>"
+    # Par cellule (capteur 1-4): "SET_FORCE:<sensor>:<force>"
+    if sensor is None:
+        return f"SET_FORCE:{force_n}"
+    return f"SET_FORCE:{sensor}:{force_n}"
+
+
+def cmd_get_status() -> str:
+    return "GET_STATUS"
+
+
+def cmd_goto(table: int, position: float) -> str:
+    # Déplacer une table (1-4) à une position (mm): "GOTO:<table>:<position>"
+    return f"GOTO:{table}:{position}"
+
+
+def cmd_torque(on: bool) -> str:
+    # Verrouille (TORQUE_ON) / déverrouille (TORQUE_OFF) les Dynamixels.
+    # TORQUE_OFF = moteurs libres pour positionnement manuel (unlock).
+    return "TORQUE_ON" if on else "TORQUE_OFF"
+
+
+# --- Parsing -------------------------------------------------------------
+
+def parse_response(line: str, state: MachineState) -> None:
+    if ":" not in line:
+        return
+
+    key, value = line.split(":", 1)
+    key = key.strip().upper()
+    value = value.strip()
+
+    if key == "FREQ":
+        try:
+            state.frequency_hz = float(value)
+        except ValueError:
+            pass
+    elif key == "POSITION":
+        # Parse positions: "10,20,30,40" -> [10.0, 20.0, 30.0, 40.0]
+        try:
+            parts = value.split(",")
+            state.positions = [float(p.strip()) for p in parts[:4]]
+            # Pad with zeros if less than 4 values
+            while len(state.positions) < 4:
+                state.positions.append(0.0)
+        except ValueError:
+            pass
+    elif key == "CURRENT":
+        state.motor_current = value
+    elif key == "FORCE" or key == "SENSOR":
+        # Parse sensors: "1.5,2.0,1.8,1.9" -> [1.5, 2.0, 1.8, 1.9]
+        try:
+            parts = value.split(",")
+            state.sensors = [float(p.strip()) for p in parts[:4]]
+            # Pad with zeros if less than 4 values
+            while len(state.sensors) < 4:
+                state.sensors.append(0.0)
+        except ValueError:
+            pass
+    elif key == "ERROR":
+        state.errors = value
+    elif key == "SLAVE":
+        state.slave_status = value
+    elif key == "STATE":
+        state.machine_status = value
