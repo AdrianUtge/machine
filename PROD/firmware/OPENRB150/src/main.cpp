@@ -596,7 +596,7 @@ void setup() {
 
     dxl.begin(DXL_BAUD);
     dxl.setPortProtocolVersion(DXL_PROTOCOL);
-    // dxlScan();  // TEMP: skip scan to see if this is the 3-second blocker
+    dxlScan();  // Scan Dynamixel IDs 1-20 on Serial1
 
     stepperTimerInit();
 
