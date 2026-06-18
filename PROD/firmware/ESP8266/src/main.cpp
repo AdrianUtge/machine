@@ -228,6 +228,19 @@ String buildOpenRbLine(JsonDocument& doc, const String& cmd) {
     }
     if (cmd == "GOTO")
         return "GOTO:" + String(doc["table"].as<int>()) + ":" + String(doc["position"].as<float>(), 3);
+    if (cmd == "MOTOR_BLINK") {
+        int motor_id = doc.containsKey("motor_id") ? doc["motor_id"].as<int>() : 0;
+        int duration_ms = doc.containsKey("duration_ms") ? doc["duration_ms"].as<int>() : 500;
+        return "BLINK_MOTOR:" + String(motor_id) + ":" + String(duration_ms);
+    }
+    if (cmd == "SET_RESISTANCE") {
+        int resistance_ohm = doc.containsKey("resistance_ohm") ? doc["resistance_ohm"].as<int>() : 30;
+        if (doc.containsKey("board_id")) {
+            int board_id = doc["board_id"].as<int>();
+            return "SET_RESISTANCE:" + String(board_id) + ":" + String(resistance_ohm);
+        }
+        return "SET_RESISTANCE:" + String(resistance_ohm);
+    }
     if (cmd == "STATUS")    return "GET_STATUS";
     // START / STOP / HOME / HARD_RESET (et fallback) : commande telle quelle
     return cmd;
@@ -310,7 +323,7 @@ void handleCommand() {
     const char* validCommands[] = {
         "START", "STOP", "HOME", "HARD_RESET",
         "FREQUENCY", "SPEED", "FORCE", "GOTO", "PRESET", "MANUAL", "STATUS",
-        "TORQUE_ON", "TORQUE_OFF"
+        "TORQUE_ON", "TORQUE_OFF", "MOTOR_BLINK", "SET_RESISTANCE"
     };
     const int validCommandsCount = sizeof(validCommands) / sizeof(validCommands[0]);
 
