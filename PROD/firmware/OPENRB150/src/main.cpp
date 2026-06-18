@@ -335,11 +335,12 @@ static void updateForceLoop() {
                 g_forcePeakStepCountCycle = g_stepCount;
             }
 
-            // Garde-fou sécurité : vérifier PENDANT la fenêtre (seul moment où g_force est valide)
-            if (g_force[i] > FORCE_MAX_N) {
-                handleHardReset();
-                return;
-            }
+            // TODO STEP 2 CALIBRATION: re-enable guard once FORCE_GAIN/OFFSET are loaded from backend
+            // Garde-fou sécurité sera validé une fois forces en Newtons (actuellement en mV bruts)
+            // if (g_force[i] > FORCE_MAX_N) {
+            //     handleHardReset();
+            //     return;
+            // }
         }
 
         lastInForceWindow = true;
@@ -532,7 +533,7 @@ void setup() {
 
     dxl.begin(DXL_BAUD);
     dxl.setPortProtocolVersion(DXL_PROTOCOL);
-    dxlScan();
+    // dxlScan();  // TEMP: skip scan to see if this is the 3-second blocker
 
     stepperTimerInit();
 
