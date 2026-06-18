@@ -26,7 +26,8 @@ static const uint8_t PIN_LED = D4;      // GPIO2 = LED intégrée (actif bas)
 // ===== Lien série vers l'OpenRB-150 =====
 // ESP TX = GPIO12 (D6) -> OpenRB Serial3 RX (D13)
 // ESP RX = GPIO14 (D5) <- OpenRB Serial3 TX (D14)
-#define OPENRB_BAUD 19200               // baud modéré = SoftwareSerial fiable malgré le WiFi
+// NOTE: 9600 baud est plus stable que 19200 sur SoftwareSerial avec WiFi actif
+#define OPENRB_BAUD 9600                // réduit de 19200 pour stabilité (trade-off latence)
 SoftwareSerial openrb(14 /*RX=GPIO14*/, 12 /*TX=GPIO12*/);
 
 // ===== Serveur Web =====
@@ -89,13 +90,33 @@ static void parseOpenRbLine(const String& line) {
 // du port série : sendToOpenRB() n'écrit que, ne lit jamais.
 static void pumpOpenRB() {
     static String buf;
+    static uint32_t lastCharMs = 0;
+
     while (openrb.available()) {
         char c = (char)openrb.read();
+        lastCharMs = millis();
+
         if (c == '\n' || c == '\r') {
-            if (buf.length()) { parseOpenRbLine(buf); buf = ""; }
+            if (buf.length()) {
+                parseOpenRbLine(buf);
+                buf = "";
+            }
         } else if (buf.length() < 120) {
             buf += c;
+        } else {
+            // Buffer plein → jetter le buffer pour éviter corruption
+            Serial.print("[OpenRB] ⚠️ Buffer overflow, jettant: ");
+            Serial.println(buf);
+            buf = "";
+            buf += c;  // Commencer une nouvelle ligne
         }
+    }
+
+    // Timeout : si 200 ms sans données, jetter le buffer incomplet
+    if (buf.length() > 0 && (millis() - lastCharMs > 200)) {
+        Serial.print("[OpenRB] ⚠️ Timeout buffer, jettant: ");
+        Serial.println(buf);
+        buf = "";
     }
 }
 
@@ -218,6 +239,8 @@ String buildOpenRbLine(JsonDocument& doc, const String& cmd) {
 void sendToOpenRB(const String& line) {
     openrb.print(line);
     openrb.print('\n');
+    openrb.flush();  // Attendre que le buffer soit vidé avant de continuer
+    delay(5);        // Délai minimal pour laisser OpenRB recevoir + parser
     Serial.print("[OpenRB] > ");
     Serial.println(line);
 }

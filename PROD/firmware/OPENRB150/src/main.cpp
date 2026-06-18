@@ -30,7 +30,9 @@
 
 // --- Lien série vers l'ESP8266 ---
 #define LINK            Serial3
-#define LINK_BAUD       19200      // SoftwareSerial côté ESP -> baud modéré, fiable
+// ÉTAPE 2 FIX: réduit de 19200 → 9600 pour stabilité (SoftwareSerial + WiFi interference)
+// Trade-off: latence +2x mais zéro déconnexions aléatoires
+#define LINK_BAUD       9600       // Réduit pour stabilité SoftwareSerial sur ESP8266
 
 // --- Streaming statut (liaison permanente) ---
 // On émet le burst de statut tout seul à 10 Hz, sans attendre de GET_STATUS.
