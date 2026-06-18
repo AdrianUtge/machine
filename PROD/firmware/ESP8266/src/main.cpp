@@ -217,31 +217,54 @@ void handleStatus() {
 }
 
 // ===== OpenRB-150 : mapping commande JSON -> protocole ligne =====
+// Use snprintf() to avoid heap fragmentation from String concatenation.
+// Each command constructs its line atomically on the stack.
 String buildOpenRbLine(JsonDocument& doc, const String& cmd) {
-    if (cmd == "FREQUENCY") return "SET_FREQ:" + String(doc["frequency"].as<float>(), 3);
-    if (cmd == "SPEED")     return "SET_SPEED:" + String(doc["speed"].as<int>());
+    char buf[128];
+
+    if (cmd == "FREQUENCY") {
+        float freq = doc["frequency"].as<float>();
+        snprintf(buf, sizeof(buf), "SET_FREQ:%.3f", freq);
+        return String(buf);
+    }
+    if (cmd == "SPEED") {
+        int speed = doc["speed"].as<int>();
+        snprintf(buf, sizeof(buf), "SET_SPEED:%d", speed);
+        return String(buf);
+    }
     if (cmd == "FORCE") {
         float f = doc["force"].as<float>();
-        if (doc.containsKey("sensor"))
-            return "SET_FORCE:" + String(doc["sensor"].as<int>()) + ":" + String(f, 3);
-        return "SET_FORCE:" + String(f, 3);
+        if (doc.containsKey("sensor")) {
+            int sensor = doc["sensor"].as<int>();
+            snprintf(buf, sizeof(buf), "SET_FORCE:%d:%.3f", sensor, f);
+        } else {
+            snprintf(buf, sizeof(buf), "SET_FORCE:%.3f", f);
+        }
+        return String(buf);
     }
-    if (cmd == "GOTO")
-        return "GOTO:" + String(doc["table"].as<int>()) + ":" + String(doc["position"].as<float>(), 3);
+    if (cmd == "GOTO") {
+        int table = doc["table"].as<int>();
+        float pos = doc["position"].as<float>();
+        snprintf(buf, sizeof(buf), "GOTO:%d:%.3f", table, pos);
+        return String(buf);
+    }
     if (cmd == "MOTOR_BLINK") {
         int motor_id = doc.containsKey("motor_id") ? doc["motor_id"].as<int>() : 0;
         int duration_ms = doc.containsKey("duration_ms") ? doc["duration_ms"].as<int>() : 500;
-        return "BLINK_MOTOR:" + String(motor_id) + ":" + String(duration_ms);
+        snprintf(buf, sizeof(buf), "BLINK_MOTOR:%d:%d", motor_id, duration_ms);
+        return String(buf);
     }
     if (cmd == "SET_RESISTANCE") {
         int resistance_ohm = doc.containsKey("resistance_ohm") ? doc["resistance_ohm"].as<int>() : 30;
         if (doc.containsKey("board_id")) {
             int board_id = doc["board_id"].as<int>();
-            return "SET_RESISTANCE:" + String(board_id) + ":" + String(resistance_ohm);
+            snprintf(buf, sizeof(buf), "SET_RESISTANCE:%d:%d", board_id, resistance_ohm);
+        } else {
+            snprintf(buf, sizeof(buf), "SET_RESISTANCE:%d", resistance_ohm);
         }
-        return "SET_RESISTANCE:" + String(resistance_ohm);
+        return String(buf);
     }
-    if (cmd == "STATUS")    return "GET_STATUS";
+    if (cmd == "STATUS")    return String("GET_STATUS");
     // START / STOP / HOME / HARD_RESET (et fallback) : commande telle quelle
     return cmd;
 }
