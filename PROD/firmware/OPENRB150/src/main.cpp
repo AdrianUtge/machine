@@ -518,7 +518,7 @@ static void dispatch(String line) {
         int col = arg.indexOf(':');
         if (col < 0) { sendErr("BLINK_MOTOR_FORMAT"); return; }
         int motor_id = arg.substring(0, col).toInt();
-        int duration_ms = arg.substring(col + 1).toInt();
+        uint32_t duration_ms = arg.substring(col + 1).toInt();
         if (motor_id < 0 || motor_id >= g_dxlCount) { sendErr("BLINK_MOTOR_ID"); return; }
         if (duration_ms <= 0) duration_ms = 500;
 
@@ -558,14 +558,14 @@ static void dispatch(String line) {
 
         if (board_id < 0) {
             // Both boards
-            digitalWrite(D4, relay_state);
-            digitalWrite(D5, relay_state);
+            digitalWrite(4, relay_state);  // Pin 4 = Board 0 relay
+            digitalWrite(5, relay_state);  // Pin 5 = Board 1 relay
         } else if (board_id == 0) {
-            // Board 0 only (D4)
-            digitalWrite(D4, relay_state);
+            // Board 0 only (pin 4)
+            digitalWrite(4, relay_state);
         } else {
-            // Board 1 only (D5)
-            digitalWrite(D5, relay_state);
+            // Board 1 only (pin 5)
+            digitalWrite(5, relay_state);
         }
         sendAck("SET_RESISTANCE");
     }
@@ -583,12 +583,12 @@ void setup() {
     digitalWrite(DIR_PIN, LOW);          // sens horaire par défaut
     digitalWrite(ENA_PIN, HIGH);         // driver désactivé au boot
 
-    // Initialize relays (D4, D5) for INA125 gain control (30 Ω vs 90 Ω)
+    // Initialize relays (pins 4, 5) for INA125 gain control (30 Ω vs 90 Ω)
     // Default: 30 Ω (relays OFF)
-    pinMode(D4, OUTPUT);
-    pinMode(D5, OUTPUT);
-    digitalWrite(D4, LOW);               // 30 Ω (relay 1 OFF)
-    digitalWrite(D5, LOW);               // 30 Ω (relay 2 OFF)
+    pinMode(4, OUTPUT);                  // Pin 4 = Board 0 relay (cells 0-1)
+    pinMode(5, OUTPUT);                  // Pin 5 = Board 1 relay (cells 2-3)
+    digitalWrite(4, LOW);                // 30 Ω (relay 1 OFF)
+    digitalWrite(5, LOW);                // 30 Ω (relay 2 OFF)
 
     analogReadResolution(12);            // 0..4095
 
