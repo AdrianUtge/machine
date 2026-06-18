@@ -109,6 +109,13 @@ class TorqueRequest(BaseModel):
 class PresetRequest(BaseModel):
     preset: str
 
+class BlinkMotorRequest(BaseModel):
+    motor_id: int       # 0-3
+    duration_ms: int = 500
+
+class SetResistanceRequest(BaseModel):
+    resistance_ohm: int  # 30 or 90
+
 class CustomPreset(BaseModel):
     name: str
     frequency: float
@@ -673,6 +680,39 @@ def set_torque(request: TorqueRequest):
     _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
+
+@app.post("/api/settings/blink-motor")
+def blink_motor(request: BlinkMotorRequest):
+    """Blink a motor LED to identify it physically (for mapping confirmation)."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    if not (0 <= request.motor_id <= 3):
+        raise HTTPException(status_code=400, detail="motor_id must be 0-3")
+
+    controller.blink_motor(request.motor_id, request.duration_ms)
+    log_action("command", f"BLINK_MOTOR:{request.motor_id}")
+    _read_all_responses()
+
+    return {"success": True}
+
+@app.post("/api/settings/set-resistance")
+def set_resistance(request: SetResistanceRequest):
+    """Switch INA125 gain by changing feedback resistor (30 Ω vs 90 Ω)."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    if request.resistance_ohm not in (30, 90):
+        raise HTTPException(status_code=400, detail="resistance_ohm must be 30 or 90")
+
+    controller.set_resistance(request.resistance_ohm)
+    log_action("command", f"SET_RESISTANCE:{request.resistance_ohm}")
+    _read_all_responses()
+
+    # Reload calibration for new resistance
+    force_cal.reload_calibration(request.resistance_ohm)
+
+    return {"success": True, "resistance_ohm": request.resistance_ohm}
 
 @app.post("/api/command/preset")
 def apply_preset(request: PresetRequest):

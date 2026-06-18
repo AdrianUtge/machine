@@ -85,6 +85,29 @@ def cmd_torque(on: bool) -> str:
     return "TORQUE_ON" if on else "TORQUE_OFF"
 
 
+def cmd_blink_motor(motor_id: int, duration_ms: int = 500) -> str:
+    """
+    Blink a Dynamixel motor's LED to identify it physically.
+    Used for confirming motor-to-sensor mapping.
+
+    motor_id: 0-3 (physical position)
+    duration_ms: how long to blink (OpenRB will blink for ~this duration)
+    """
+    return f"BLINK_MOTOR:{motor_id}:{duration_ms}"
+
+
+def cmd_set_resistance(resistance_ohm: int) -> str:
+    """
+    Switch INA125 gain by changing feedback resistor (30 Ω vs 90 Ω).
+    Triggers relay switch on pins D6/D7.
+
+    resistance_ohm: 30 or 90
+    """
+    if resistance_ohm not in (30, 90):
+        resistance_ohm = 30
+    return f"SET_RESISTANCE:{resistance_ohm}"
+
+
 # --- Parsing -------------------------------------------------------------
 
 def parse_response(line: str, state: MachineState) -> None:

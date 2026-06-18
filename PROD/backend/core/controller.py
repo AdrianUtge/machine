@@ -36,6 +36,8 @@ from comm.protocol import (
     cmd_set_speed,
     cmd_start,
     cmd_torque,
+    cmd_blink_motor,
+    cmd_set_resistance,
     parse_response,
 )
 from comm.serial_link import SerialLink
@@ -130,3 +132,13 @@ class MachineController:
 
     def get_status(self) -> None:
         self._send(cmd_get_status())
+
+    def blink_motor(self, motor_id: int, duration_ms: int = 500) -> None:
+        """Blink a motor's LED to identify it physically (for mapping confirmation)."""
+        if 0 <= motor_id <= 3:
+            self._send(cmd_blink_motor(motor_id, duration_ms))
+
+    def set_resistance(self, resistance_ohm: int) -> None:
+        """Switch INA125 gain by changing feedback resistor (30 Ω vs 90 Ω)."""
+        if resistance_ohm in (30, 90):
+            self._send(cmd_set_resistance(resistance_ohm))

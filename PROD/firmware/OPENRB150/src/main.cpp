@@ -513,6 +513,41 @@ static void dispatch(String line) {
         for (uint8_t i = 0; i < g_dxlCount; i++) dxl.torqueOn(g_dxlIds[i]);
         sendAck("TORQUE_ON");
     }
+    else if (cmd == "BLINK_MOTOR") {
+        // Format: BLINK_MOTOR:<motor_id>:<duration_ms>
+        int col = arg.indexOf(':');
+        if (col < 0) { sendErr("BLINK_MOTOR_FORMAT"); return; }
+        int motor_id = arg.substring(0, col).toInt();
+        int duration_ms = arg.substring(col + 1).toInt();
+        if (motor_id < 0 || motor_id >= g_dxlCount) { sendErr("BLINK_MOTOR_ID"); return; }
+        if (duration_ms <= 0) duration_ms = 500;
+
+        // Blink: toggle LED rapidly for ~duration_ms
+        uint32_t start = millis();
+        while (millis() - start < duration_ms) {
+            dxl.ledOn(g_dxlIds[motor_id]);
+            delay(100);
+            dxl.ledOff(g_dxlIds[motor_id]);
+            delay(100);
+        }
+        dxl.ledOff(g_dxlIds[motor_id]);
+        sendAck("BLINK_MOTOR");
+    }
+    else if (cmd == "SET_RESISTANCE") {
+        int resistance = arg.toInt();
+        if (resistance != 30 && resistance != 90) { sendErr("RESISTANCE_VALUE"); return; }
+        // D6 = relay 1, D7 = relay 2
+        // 30 Ω = relays OFF (circuit path A)
+        // 90 Ω = relays ON  (circuit path B)
+        if (resistance == 30) {
+            digitalWrite(D4, LOW);  // or D6 depending on pin mapping
+            digitalWrite(D5, LOW);  // or D7 depending on pin mapping
+        } else {
+            digitalWrite(D4, HIGH);
+            digitalWrite(D5, HIGH);
+        }
+        sendAck("SET_RESISTANCE");
+    }
     else                          sendErr("UNKNOWN_COMMAND");
 }
 
@@ -526,6 +561,13 @@ void setup() {
     pinMode(ENA_PIN, OUTPUT);
     digitalWrite(DIR_PIN, LOW);          // sens horaire par défaut
     digitalWrite(ENA_PIN, HIGH);         // driver désactivé au boot
+
+    // Initialize relays (D4, D5) for INA125 gain control (30 Ω vs 90 Ω)
+    // Default: 30 Ω (relays OFF)
+    pinMode(D4, OUTPUT);
+    pinMode(D5, OUTPUT);
+    digitalWrite(D4, LOW);               // 30 Ω (relay 1 OFF)
+    digitalWrite(D5, LOW);               // 30 Ω (relay 2 OFF)
 
     analogReadResolution(12);            // 0..4095
 
