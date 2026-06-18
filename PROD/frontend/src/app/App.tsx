@@ -309,7 +309,7 @@ export default function App() {
           onClose={() => setShowSettings(false)}
           onBlinkMotor={blinkMotor}
           onSetResistance={setResistance}
-          currentResistance={30}  // TODO: get from machineState or backend
+          currentResistances={{ board0: 30, board1: 30 }}  // TODO: get from machineState or backend
         />
       )}
     </div>

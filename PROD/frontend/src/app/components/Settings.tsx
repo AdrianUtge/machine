@@ -3,11 +3,12 @@
  * FILE: Settings.tsx
  * ROLE:
  *   Machine calibration & configuration settings: motor identification,
- *   resistance/gain selection for INA125 sensors.
+ *   resistance/gain selection for INA125 sensors (per-board control).
  *
  * RESPONSIBILITIES:
  *   - Motor LED blink identification (user clicks button, motor blinks, confirms ID)
  *   - Switch between 30 Ω (high sensitivity) and 90 Ω (wide range) calibrations
+ *   - Separate control for Board 0 (cells 0-1, relay D4) and Board 1 (cells 2-3, relay D5)
  *
  * MAINTAINER NOTES:
  *   - All commands are sent via the controller hook (blinkMotor, setResistance)
@@ -20,8 +21,8 @@ interface SettingsProps {
   isConnected: boolean;
   onClose: () => void;
   onBlinkMotor: (motorId: number, durationMs?: number) => void;
-  onSetResistance: (resistanceOhm: number) => void;
-  currentResistance?: number;
+  onSetResistance: (resistanceOhm: number, boardId?: number) => void;
+  currentResistances?: { board0: number; board1: number };
 }
 
 export default function Settings({
@@ -29,13 +30,18 @@ export default function Settings({
   onClose,
   onBlinkMotor,
   onSetResistance,
-  currentResistance = 30,
+  currentResistances = { board0: 30, board1: 30 },
 }: SettingsProps) {
   const motors = [
     { id: 0, label: 'Motor 0 (Table 0)', color: 'from-blue-500 to-blue-600' },
     { id: 1, label: 'Motor 1 (Table 1)', color: 'from-purple-500 to-purple-600' },
     { id: 2, label: 'Motor 2 (Table 2)', color: 'from-pink-500 to-pink-600' },
     { id: 3, label: 'Motor 3 (Table 3)', color: 'from-orange-500 to-orange-600' },
+  ];
+
+  const boards = [
+    { id: 0, label: 'Board 0 (Cells 0-1)', relay: 'D4', cells: '0, 1' },
+    { id: 1, label: 'Board 1 (Cells 2-3)', relay: 'D5', cells: '2, 3' },
   ];
 
   const resistanceOptions = [
@@ -51,17 +57,17 @@ export default function Settings({
     onBlinkMotor(motorId, 1000); // Blink for 1 second
   };
 
-  const handleSetResistance = (resistance: number) => {
+  const handleSetResistance = (boardId: number, resistance: number) => {
     if (!isConnected) {
       alert('Machine not connected');
       return;
     }
-    onSetResistance(resistance);
+    onSetResistance(resistance, boardId);
   };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-      <div className="bg-slate-800 rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+      <div className="bg-slate-800 rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="sticky top-0 bg-slate-900 border-b border-slate-700 p-6 flex items-center justify-between">
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
@@ -108,45 +114,62 @@ export default function Settings({
             </div>
           </div>
 
-          {/* Resistance Selection Section */}
+          {/* Resistance Selection Section - Per Board */}
           <div className="border border-slate-700 rounded-lg p-6">
             <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
               <div className="w-3 h-3 bg-emerald-500 rounded-full"></div>
-              INA125 Gain Selection
+              INA125 Gain Selection (Per Board)
             </h2>
             <p className="text-slate-400 text-sm mb-6">
-              Switch the feedback resistor via relay control to change the INA125 operational amplifier gain.
-              This changes the calibration curve and sensitivity of the force sensors.
+              Switch the feedback resistor via relay control to change the INA125 gain independently for each board.
+              Board 0 controls cells 0-1, Board 1 controls cells 2-3.
             </p>
 
-            <div className="space-y-3">
-              {resistanceOptions.map((option) => (
-                <button
-                  key={option.value}
-                  onClick={() => handleSetResistance(option.value)}
-                  disabled={!isConnected}
-                  className={`w-full p-4 rounded-lg transition-all text-left ${
-                    currentResistance === option.value
-                      ? 'ring-2 ring-emerald-500 bg-slate-700'
-                      : 'hover:bg-slate-700'
-                  } ${!isConnected ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-semibold text-white">{option.label}</div>
-                      <div className="text-sm text-slate-400">{option.description}</div>
+            <div className="space-y-8">
+              {boards.map((board) => {
+                const currentResistance = board.id === 0 ? currentResistances.board0 : currentResistances.board1;
+                return (
+                  <div key={board.id} className="bg-slate-900 rounded-lg p-4 border border-slate-700">
+                    <div className="mb-4">
+                      <h3 className="text-lg font-semibold text-white">{board.label}</h3>
+                      <p className="text-xs text-slate-400 mt-1">
+                        Relay: <span className="font-mono bg-slate-800 px-2 py-1 rounded">{board.relay}</span> |
+                        Cells: {board.cells}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-3">
-                      {currentResistance === option.value && (
-                        <div className="px-3 py-1 bg-emerald-600 rounded-full text-sm font-semibold text-white">
-                          Active
-                        </div>
-                      )}
-                      <div className="text-lg font-bold text-slate-300">{option.value}Ω</div>
+
+                    <div className="space-y-2">
+                      {resistanceOptions.map((option) => (
+                        <button
+                          key={option.value}
+                          onClick={() => handleSetResistance(board.id, option.value)}
+                          disabled={!isConnected}
+                          className={`w-full p-3 rounded-lg transition-all text-left text-sm ${
+                            currentResistance === option.value
+                              ? 'ring-2 ring-emerald-500 bg-emerald-900 bg-opacity-30'
+                              : 'hover:bg-slate-800'
+                          } ${!isConnected ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <div className="font-semibold text-white">{option.label}</div>
+                              <div className="text-xs text-slate-400">{option.description}</div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {currentResistance === option.value && (
+                                <div className="px-2 py-1 bg-emerald-600 rounded text-xs font-semibold text-white">
+                                  Active
+                                </div>
+                              )}
+                              <div className="font-bold text-slate-300">{option.value}Ω</div>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
                     </div>
                   </div>
-                </button>
-              ))}
+                );
+              })}
             </div>
           </div>
 

@@ -534,17 +534,38 @@ static void dispatch(String line) {
         sendAck("BLINK_MOTOR");
     }
     else if (cmd == "SET_RESISTANCE") {
-        int resistance = arg.toInt();
-        if (resistance != 30 && resistance != 90) { sendErr("RESISTANCE_VALUE"); return; }
-        // D6 = relay 1, D7 = relay 2
-        // 30 Ω = relays OFF (circuit path A)
-        // 90 Ω = relays ON  (circuit path B)
-        if (resistance == 30) {
-            digitalWrite(D4, LOW);  // or D6 depending on pin mapping
-            digitalWrite(D5, LOW);  // or D7 depending on pin mapping
+        // Format: SET_RESISTANCE:<ohm> (both boards) or SET_RESISTANCE:<boardId>:<ohm>
+        int col = arg.indexOf(':');
+        int board_id = -1;
+        int resistance = 30;
+
+        if (col < 0) {
+            // Format: <ohm> only
+            resistance = arg.toInt();
         } else {
-            digitalWrite(D4, HIGH);
-            digitalWrite(D5, HIGH);
+            // Format: <boardId>:<ohm>
+            board_id = arg.substring(0, col).toInt();
+            resistance = arg.substring(col + 1).toInt();
+        }
+
+        if (resistance != 30 && resistance != 90) { sendErr("RESISTANCE_VALUE"); return; }
+        if (board_id >= 0 && (board_id != 0 && board_id != 1)) { sendErr("BOARD_ID"); return; }
+
+        // D4 = Board 0 (cells 0-1), D5 = Board 1 (cells 2-3)
+        // 30 Ω = relay OFF (LOW)
+        // 90 Ω = relay ON  (HIGH)
+        uint8_t relay_state = (resistance == 30) ? LOW : HIGH;
+
+        if (board_id < 0) {
+            // Both boards
+            digitalWrite(D4, relay_state);
+            digitalWrite(D5, relay_state);
+        } else if (board_id == 0) {
+            // Board 0 only (D4)
+            digitalWrite(D4, relay_state);
+        } else {
+            // Board 1 only (D5)
+            digitalWrite(D5, relay_state);
         }
         sendAck("SET_RESISTANCE");
     }

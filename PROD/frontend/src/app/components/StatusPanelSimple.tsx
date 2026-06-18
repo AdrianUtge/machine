@@ -192,15 +192,32 @@ export default function StatusPanelSimple({
         </div>
       )}
 
-      {/* Cell voltages (raw) — utile pour calibrer cal_330.txt */}
+      {/* Resistance status (per board) */}
+      <div className="border-t border-slate-700 pt-2 space-y-2 text-sm">
+        <p className="text-xs text-slate-400 uppercase font-semibold">Resistance (Rg)</p>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="bg-slate-900 rounded p-2">
+            <div className="text-[10px] text-slate-500 mb-1">Board 0 (D4)</div>
+            <div className="font-mono font-bold text-emerald-400">30 Ω</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">Cells 0-1</div>
+          </div>
+          <div className="bg-slate-900 rounded p-2">
+            <div className="text-[10px] text-slate-500 mb-1">Board 1 (D5)</div>
+            <div className="font-mono font-bold text-emerald-400">30 Ω</div>
+            <div className="text-[10px] text-slate-500 mt-0.5">Cells 2-3</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Cell voltages (raw, mV) — useful for calibrating */}
       {machineState.cell_volts && (
         <div className="border-t border-slate-700 pt-2 space-y-2 text-sm">
-          <p className="text-xs text-slate-400 uppercase font-semibold">Cell voltage (V)</p>
+          <p className="text-xs text-slate-400 uppercase font-semibold">Cell Voltage (mV)</p>
           <div className="grid grid-cols-4 gap-2">
             {machineState.cell_volts.slice(0, 4).map((v, i) => (
               <div key={i} className="bg-slate-900 rounded p-2 text-center">
-                <div className="text-[10px] text-slate-500">C{i + 1}</div>
-                <div className="font-mono font-bold text-cyan-400 text-sm">{(v ?? 0).toFixed(3)}</div>
+                <div className="text-[10px] text-slate-500 mb-0.5">C{i}</div>
+                <div className="font-mono font-bold text-cyan-400 text-sm">{((v ?? 0) * 1000).toFixed(0)}</div>
               </div>
             ))}
           </div>

@@ -96,16 +96,19 @@ def cmd_blink_motor(motor_id: int, duration_ms: int = 500) -> str:
     return f"BLINK_MOTOR:{motor_id}:{duration_ms}"
 
 
-def cmd_set_resistance(resistance_ohm: int) -> str:
+def cmd_set_resistance(resistance_ohm: int, board_id: int | None = None) -> str:
     """
     Switch INA125 gain by changing feedback resistor (30 Ω vs 90 Ω).
-    Triggers relay switch on pins D6/D7.
+    Triggers relay switch on pins D4 (Board 0) or D5 (Board 1).
 
     resistance_ohm: 30 or 90
+    board_id: 0 (D4, cells 0-1) or 1 (D5, cells 2-3), None = both
     """
     if resistance_ohm not in (30, 90):
         resistance_ohm = 30
-    return f"SET_RESISTANCE:{resistance_ohm}"
+    if board_id is None:
+        return f"SET_RESISTANCE:{resistance_ohm}"
+    return f"SET_RESISTANCE:{board_id}:{resistance_ohm}"
 
 
 # --- Parsing -------------------------------------------------------------

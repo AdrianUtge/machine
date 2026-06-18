@@ -115,6 +115,7 @@ class BlinkMotorRequest(BaseModel):
 
 class SetResistanceRequest(BaseModel):
     resistance_ohm: int  # 30 or 90
+    board_id: Optional[int] = None  # 0 (D4, cells 0-1) or 1 (D5, cells 2-3), None = both
 
 class CustomPreset(BaseModel):
     name: str
@@ -698,21 +699,32 @@ def blink_motor(request: BlinkMotorRequest):
 
 @app.post("/api/settings/set-resistance")
 def set_resistance(request: SetResistanceRequest):
-    """Switch INA125 gain by changing feedback resistor (30 Ω vs 90 Ω)."""
+    """Switch INA125 gain by changing feedback resistor (30 Ω vs 90 Ω).
+
+    board_id: 0 (D4, cells 0-1) or 1 (D5, cells 2-3), None = both
+    """
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
 
     if request.resistance_ohm not in (30, 90):
         raise HTTPException(status_code=400, detail="resistance_ohm must be 30 or 90")
 
-    controller.set_resistance(request.resistance_ohm)
-    log_action("command", f"SET_RESISTANCE:{request.resistance_ohm}")
+    if request.board_id is not None and request.board_id not in (0, 1):
+        raise HTTPException(status_code=400, detail="board_id must be 0, 1, or None")
+
+    controller.set_resistance(request.resistance_ohm, request.board_id)
+    board_label = f"Board {request.board_id}" if request.board_id is not None else "Both boards"
+    log_action("command", f"SET_RESISTANCE:{board_label}:{request.resistance_ohm}")
     _read_all_responses()
 
     # Reload calibration for new resistance
     force_cal.reload_calibration(request.resistance_ohm)
 
-    return {"success": True, "resistance_ohm": request.resistance_ohm}
+    return {
+        "success": True,
+        "resistance_ohm": request.resistance_ohm,
+        "board_id": request.board_id,
+    }
 
 @app.post("/api/command/preset")
 def apply_preset(request: PresetRequest):

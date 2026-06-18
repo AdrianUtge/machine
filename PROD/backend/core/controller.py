@@ -138,7 +138,10 @@ class MachineController:
         if 0 <= motor_id <= 3:
             self._send(cmd_blink_motor(motor_id, duration_ms))
 
-    def set_resistance(self, resistance_ohm: int) -> None:
-        """Switch INA125 gain by changing feedback resistor (30 Ω vs 90 Ω)."""
+    def set_resistance(self, resistance_ohm: int, board_id: int | None = None) -> None:
+        """Switch INA125 gain by changing feedback resistor (30 Ω vs 90 Ω).
+
+        board_id: 0 (D4, cells 0-1) or 1 (D5, cells 2-3), None = both
+        """
         if resistance_ohm in (30, 90):
-            self._send(cmd_set_resistance(resistance_ohm))
+            self._send(cmd_set_resistance(resistance_ohm, board_id))
