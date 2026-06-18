@@ -40,10 +40,31 @@ versionné — exactement ce que `.machine_config.ini` (gitignoré) doit éviter
 
 ---
 
+## ÉTAPE 2 — Boucle fermée de force (EN COURS)
+
+**Status:** Implémentée en firmware, testable sur matériel réel.
+
+**Fix appliqué (2026-06-18):**
+- ✅ Réduit baud `19200 → 9600` pour stabilité SoftwareSerial (WiFi interference)
+- ✅ Ajouté `flush()` + delay en `sendToOpenRB()`
+- ✅ Amélioré `pumpOpenRB()` : timeout + overflow detection
+
+**À faire avant merge:**
+- [ ] Valider fenêtre d'acquisition sur matériel réel (voir doc 16 Test 1)
+- [ ] Tester stratégie 3-phases (descente rapide → fine-tuning, doc 16 Test 2)
+- [ ] Affiner constantes (STEP_DOWN_FAST/SLOW, STEP_UP_FAST/SLOW)
+
+**À explorer après (post-ÉTAPE 2):**
+- [ ] **Tester avec UART1 matériel** au lieu de SoftwareSerial
+  - ESP8266 a UART0 (logs USB) et UART1 (peut relayer sériel)
+  - Potentiellement plus stable, zéro WiFi interference
+  - Nécessite rewiring : chercher pins UART1 RX/TX sur NodeMCU
+  - Bénéfice : possibilité de repasser à `19200 baud` (moins latence)
+
+---
+
 ## Autres dettes connues (non bloquantes) — voir AUDIT_REPORT.md §8
 
-- Firmware OpenRB en **ÉTAPE 1** : pas de boucle fermée de force (`SET_FORCE` ne
-  fait que mémoriser la consigne).
 - **Calibration force** (ADC→Newton : `FORCE_GAIN/OFFSET`) et **conversion
   mm↔Dynamixel** (`DXL_PER_MM`) = placeholders à régler avec le matériel.
 - `STOP` ≡ `hard_reset` côté API (pas d'arrêt « doux » distinct).
