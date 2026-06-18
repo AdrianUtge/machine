@@ -252,6 +252,9 @@ String buildOpenRbLine(JsonDocument& doc, const String& cmd) {
         int motor_id = doc.containsKey("motor_id") ? doc["motor_id"].as<int>() : 0;
         int duration_ms = doc.containsKey("duration_ms") ? doc["duration_ms"].as<int>() : 500;
         snprintf(buf, sizeof(buf), "BLINK_MOTOR:%d:%d", motor_id, duration_ms);
+        Serial.print("[DEBUG] MOTOR_BLINK: motor_id="); Serial.print(motor_id);
+        Serial.print(" duration_ms="); Serial.print(duration_ms);
+        Serial.print(" → "); Serial.println(buf);
         return String(buf);
     }
     if (cmd == "SET_RESISTANCE") {

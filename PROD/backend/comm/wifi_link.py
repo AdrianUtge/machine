@@ -138,6 +138,7 @@ class WiFiLink:
                 payload[key] = value
 
         print(f"[WiFiLink] Sending command: {payload}")
+        print(f"[WiFiLink] DEBUG: kwargs = {kwargs}")  # DEBUG
         logger.debug(f"Sending command: {payload}")
 
         # Le lien WiFi de l'ESP peut perdre des paquets (alim/RF) : on réessaie

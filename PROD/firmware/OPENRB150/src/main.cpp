@@ -515,11 +515,20 @@ static void dispatch(String line) {
     }
     else if (cmd == "BLINK_MOTOR") {
         // Format: BLINK_MOTOR:<motor_id>:<duration_ms>
+        Serial.print("[DEBUG] BLINK_MOTOR arg='"); Serial.print(arg); Serial.println("'");
         int col = arg.indexOf(':');
         if (col < 0) { sendErr("BLINK_MOTOR_FORMAT"); return; }
         int motor_id = arg.substring(0, col).toInt();
         uint32_t duration_ms = arg.substring(col + 1).toInt();
-        if (motor_id < 0 || motor_id >= g_dxlCount) { sendErr("BLINK_MOTOR_ID"); return; }
+        Serial.print("[DEBUG] motor_id="); Serial.print(motor_id);
+        Serial.print(" duration_ms="); Serial.print(duration_ms);
+        Serial.print(" g_dxlCount="); Serial.println(g_dxlCount);
+        if (motor_id < 0 || motor_id >= g_dxlCount) {
+            Serial.print("[ERROR] motor_id out of range: "); Serial.print(motor_id);
+            Serial.print(" >= "); Serial.println(g_dxlCount);
+            sendErr("BLINK_MOTOR_ID");
+            return;
+        }
         if (duration_ms <= 0) duration_ms = 500;
 
         // Blink: toggle LED rapidly for ~duration_ms
