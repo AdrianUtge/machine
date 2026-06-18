@@ -55,6 +55,55 @@ static float  FORCE_GAIN[4]   = { 1.0f, 1.0f, 1.0f, 1.0f };  // N par count ADC 
 static float  FORCE_OFFSET[4] = { 0.0f, 0.0f, 0.0f, 0.0f };  // count ADC à vide (Phase 2)
 static const float FORCE_MAX_N = 49.0f;      // garde-fou capteur (cellule 50 N) — ÉTAPE 2
 
+// === ÉTAPE 2 : BOUCLE FERMÉE DE FORCE ===
+
+// Fenêtre d'acquisition (plage du cycle stepper où on prend les mesures)
+// Les 4 capteurs touchent ensemble au bas du cycle stepper → même moment (même mobile)
+// Zone contact : [3050, 3200] = derniers 5% du cycle (0→3200)
+static const uint16_t FORCE_WINDOW_START = 3050;  // ~95% du cycle
+static const uint16_t FORCE_WINDOW_END = 3200;    // 100% (point bas exact)
+static uint16_t g_forceWindowStart = FORCE_WINDOW_START;
+static uint16_t g_forceWindowEnd = FORCE_WINDOW_END;
+
+// Seuil de contact (force doit dépasser ce seuil pour confirmer contact)
+static const float FORCE_CONTACT_THRESHOLD = 0.5f;  // 500 mV
+
+// Stratégie 3-phases de descente/remontée
+static const float FINE_TUNE_ZONE_MM = 20.0f;    // Au-dessus = descente rapide
+static const float STEP_DOWN_FAST_MM = 1.0f;     // Pas rapide (phase 1)
+static const float STEP_DOWN_SLOW_MM = 0.1f;     // Pas lent (phase 2, fine-tuning)
+static const float FORCE_OVERSHOOT_THRESHOLD = 1.05f;  // 105% de cible (5% dépassement)
+static const float STEP_UP_FAST_MM = 1.0f;       // Remontée rapide si > 5% dépassement
+static const float STEP_UP_SLOW_MM = 0.2f;       // Remontée lente si ≤ 5% dépassement
+
+// Position au boot après homing
+static const float BOOT_POSITION_MM = 96.0f;     // Z haute
+
+// Deadband force (tolérance "force OK")
+static const float FORCE_DEADBAND = 0.01f;       // ±10 mV
+
+// Timing boucle fermée
+static const uint32_t FORCE_LOOP_INTERVAL_MS = 50;  // 20 Hz
+
+// Peak tracking (max force du cycle actuel)
+static float g_forcePeakCycle[4] = { 0, 0, 0, 0 };  // Force max durant fenêtre
+static uint16_t g_forcePeakStepCountCycle = 0;      // g_stepCount du peak
+
+// État de la boucle fermée
+static uint32_t lastForceLoopMs = 0;
+static bool lastInForceWindow = false;
+
+// Phase de contrôle par table (pour logging/debug)
+enum ForceControlPhase {
+  PHASE_IDLE = 0,
+  PHASE_DESCENT_FAST = 1,
+  PHASE_DESCENT_SLOW = 2,
+  PHASE_HOLDING = 3,
+  PHASE_ASCENT_SLOW = 4,
+  PHASE_ASCENT_FAST = 5
+};
+static uint8_t g_forcePhase[4] = { PHASE_IDLE, PHASE_IDLE, PHASE_IDLE, PHASE_IDLE };
+
 // --- Dynamixel (tables) ---
 #define DXL_SERIAL      Serial1
 static const float    DXL_PROTOCOL = 2.0f;
@@ -215,6 +264,101 @@ static void updateDxlLeds() {
         for (uint8_t i = 0; i < g_dxlCount; i++) dxl.ledOn(g_dxlIds[i]);
         lastMode = g_mode;
         blinkOn  = true;
+    }
+}
+
+// ===== ÉTAPE 2 : Boucle fermée de force ====================================
+
+static bool isInForceWindow() {
+    if (g_forceWindowStart <= g_forceWindowEnd) {
+        return g_stepCount >= g_forceWindowStart && g_stepCount <= g_forceWindowEnd;
+    } else {
+        return g_stepCount >= g_forceWindowStart || g_stepCount <= g_forceWindowEnd;
+    }
+}
+
+static struct {
+    uint8_t phase;
+    float step_mm;
+} getControlPhaseAndStep(uint8_t table_i, float current_mm, float target_force, float measured_force) {
+    float error = target_force - measured_force;
+
+    if (current_mm > FINE_TUNE_ZONE_MM && error > FORCE_DEADBAND) {
+        return { PHASE_DESCENT_FAST, -STEP_DOWN_FAST_MM };
+    }
+
+    if (current_mm <= FINE_TUNE_ZONE_MM && error > FORCE_DEADBAND) {
+        return { PHASE_DESCENT_SLOW, -STEP_DOWN_SLOW_MM };
+    }
+
+    if (error > -FORCE_DEADBAND && error < +FORCE_DEADBAND) {
+        return { PHASE_HOLDING, 0.0f };
+    }
+
+    if (error < -FORCE_DEADBAND) {
+        float overshoot_ratio = measured_force / target_force;
+        if (overshoot_ratio > FORCE_OVERSHOOT_THRESHOLD) {
+            return { PHASE_ASCENT_FAST, +STEP_UP_FAST_MM };
+        } else {
+            return { PHASE_ASCENT_SLOW, +STEP_UP_SLOW_MM };
+        }
+    }
+
+    return { PHASE_IDLE, 0.0f };
+}
+
+static void updateForceLoop() {
+    if (g_mode != Mode::RUNNING) return;
+
+    bool nowInWindow = isInForceWindow();
+
+    // PENDANT fenêtre : lire forces, tracker peaks, PAS de mouvements
+    if (nowInWindow) {
+        if (!lastInForceWindow) {
+            for (uint8_t i = 0; i < N_TABLES; i++) {
+                g_forcePeakCycle[i] = 0.0f;
+            }
+        }
+
+        readAllForces();
+
+        for (uint8_t i = 0; i < N_TABLES; i++) {
+            if (g_force[i] > g_forcePeakCycle[i]) {
+                g_forcePeakCycle[i] = g_force[i];
+                g_forcePeakStepCountCycle = g_stepCount;
+            }
+        }
+
+        lastInForceWindow = true;
+        return;  // ★ NE PAS faire de mouvements pendant la mesure ★
+    }
+
+    // APRÈS fenêtre : appliquer corrections Dynamixel
+    if (lastInForceWindow) {
+        for (uint8_t i = 0; i < N_TABLES; i++) {
+            if (g_dxlIds[i] == 0) continue;
+
+            float current_mm = dxlPositionMm(i);
+            auto control = getControlPhaseAndStep(i, current_mm, g_forceTarget[i], g_forcePeakCycle[i]);
+            g_forcePhase[i] = control.phase;
+
+            if (control.step_mm == 0.0f) {
+                continue;
+            }
+
+            float next_mm = current_mm + control.step_mm;
+            dxlGotoMm(i, next_mm);
+        }
+    }
+
+    lastInForceWindow = false;
+
+    // Garde-fou sécurité
+    for (uint8_t i = 0; i < N_TABLES; i++) {
+        if (g_force[i] > FORCE_MAX_N) {
+            handleHardReset();
+            return;
+        }
     }
 }
 
@@ -413,7 +557,12 @@ void loop() {
     // Feedback LED : clignotement en RUNNING, fixe sinon.
     updateDxlLeds();
 
-    // ÉTAPE 2 (à venir) : si Mode::RUNNING, au point bas faire un burst de 10
-    // mesures par cellule, comparer aux consignes g_forceTarget[], descendre
-    // 1 micro-pas / cycle, remonter vite si dépassement, garde-fou 49 N.
+    // ÉTAPE 2 : Boucle fermée de force (timing critique)
+    // - PENDANT fenêtre : lire forces seulement
+    // - APRÈS fenêtre : appliquer corrections si erreur
+    static uint32_t lastForceLoopUpdateMs = 0;
+    if (now - lastForceLoopUpdateMs >= FORCE_LOOP_INTERVAL_MS) {
+        lastForceLoopUpdateMs = now;
+        updateForceLoop();
+    }
 }
