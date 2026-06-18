@@ -319,21 +319,31 @@ def connect(request: ConnectRequest):
                     print(f"[WiFi] Warning: Could not load WiFiManager: {e}")
                     wifi_manager = None
 
-                # Get NodeMCU configuration from setup.json
+                # SOURCE UNIQUE des paramètres ESP : .machine_config.ini, lu via
+                # machine_config (qui localise le .ini de façon fiable depuis
+                # backend/). On NE dépend PLUS d'un fallback hardcodé pour le jeton.
+                nodeMcu_config = _machine_config.nodemcu()
+                # Compat : si WiFiManager a chargé une config (ex: legacy setup.json),
+                # elle ne sert qu'à compléter d'éventuels champs absents du .ini.
                 if wifi_manager and wifi_manager.config:
-                    nodeMcu_config = wifi_manager.config.get('nodeMcu', {})
-                    print(f"[WiFi] Config found: {nodeMcu_config}")
-                else:
-                    print("[WiFi] No config found, using defaults")
-                    nodeMcu_config = {}
+                    legacy = wifi_manager.config.get('nodeMcu', {})
+                    for k, v in legacy.items():
+                        nodeMcu_config.setdefault(k, v)
+                log.debug("[WiFi] nodeMcu config résolue: ip=%s port=%s key=%s",
+                          nodeMcu_config.get('ip'), nodeMcu_config.get('port'),
+                          '(défini)' if nodeMcu_config.get('key') else '(VIDE)')
 
-                # Get IP and port from config or use defaults (AP mode defaults)
-                ip = nodeMcu_config.get('ip', '192.168.4.1')  # Default AP mode IP
-                port = nodeMcu_config.get('port', 8080)
-                key = nodeMcu_config.get('key', 'bearer_token_secret')  # Default token
+                # IP/port/jeton depuis le .ini (défauts AP usine si vraiment absents).
+                ip = nodeMcu_config.get('ip') or '192.168.4.1'
+                port = nodeMcu_config.get('port') or 8080
+                key = nodeMcu_config.get('key', '')
 
-                print(f"[WiFi] Connecting to ESP8266 at {ip}:{port}")
-                print(f"[WiFi] Using auth token: {'*' * len(key)}")
+                if not key:
+                    log.warning("[WiFi] Aucun jeton ([nodemcu].key) dans .machine_config.ini — "
+                                "l'ESP renverra 401. Renseignez la clé puis relancez.")
+
+                log.info("[WiFi] Connexion ESP8266 %s:%s (jeton: %s)",
+                         ip, port, '*' * len(key) if key else 'AUCUN')
 
                 if not ip:
                     raise HTTPException(

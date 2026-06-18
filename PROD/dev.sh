@@ -61,7 +61,20 @@ info "Frontend : http://localhost:5173  (Vite HMR)"
 echo "------------------------------------------------------------"
 
 PIDS=()
-cleanup() { echo; info "Arrêt…"; for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done; }
+BACKEND_PID=""
+FRONTEND_PID=""
+
+cleanup() {
+  echo; info "Arrêt…"
+  for pid in "${PIDS[@]:-}"; do
+    # Tuer le process group complet (tous les enfants)
+    kill -TERM -"$pid" 2>/dev/null || true
+    # Attendre un peu pour un arrêt gracieux
+    sleep 0.5
+    # Fallback : force kill si le processus persiste
+    kill -9 -"$pid" 2>/dev/null || true
+  done
+}
 trap cleanup EXIT INT TERM
 
 # Backend avec reload. uvicorn lance `api:app` (le bloc __main__ ne tourne pas),
@@ -69,11 +82,15 @@ trap cleanup EXIT INT TERM
 cd "$BACKEND_DIR"
 export MACHINE_VERBOSE="$( [ "$BACKEND_VERBOSE" = "-vv" ] && echo vv || echo v )"
 ( uvicorn api:app --host 0.0.0.0 --port 8000 --reload --log-level debug 2>&1 | sed -u 's/^/[API] /' ) &
-PIDS+=($!)
+BACKEND_PID=$!
+PIDS+=("$BACKEND_PID")
+ok "[API] Backend Python PID: $BACKEND_PID"
 
 cd "$FRONTEND_DIR"
 ( npm run dev 2>&1 | sed -u 's/^/[UI]  /' ) &
-PIDS+=($!)
+FRONTEND_PID=$!
+PIDS+=("$FRONTEND_PID")
+ok "[UI]  Frontend Vite PID: $FRONTEND_PID"
 
 ok "Démarré. Ctrl-C pour arrêter les deux."
 wait
