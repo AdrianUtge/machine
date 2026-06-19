@@ -162,21 +162,25 @@ class WiFiLink:
         }
 
     def connect(self) -> bool:
-        """Test connection to ESP8266 via TCP ping (send empty frame)."""
-        print(f"[WiFiLink] Testing connection to: {self.ip}:{self.TCP_PORT}")
+        """Test connection to ESP8266 via HTTP GET /api/status (not TCP)."""
+        url = f"http://{self.ip}:{self.http_port}/api/status"
+        print(f"[WiFiLink] Testing HTTP connection to: {url}")
 
         try:
-            # Try a simple ping: GET_STATUS (0xF0) frame
-            frame = build_command_frame(0xF0, b'')  # GET_STATUS
-            result = self.send_frame(frame)
+            with self._http_lock:
+                response = requests.get(
+                    url,
+                    headers=self.headers,
+                    timeout=self.timeout
+                )
 
-            self.connected = result
+            self.connected = (response.status_code == 200)
             if self.connected:
-                print(f"[WiFiLink] ✅ Connecté via TCP")
-                logger.info(f"Connected to ESP8266 at {self.ip}:{self.TCP_PORT}")
+                print(f"[WiFiLink] ✅ Connected via HTTP")
+                logger.info(f"Connected to ESP8266 at {self.ip}:{self.http_port}")
             else:
-                print(f"[WiFiLink] ❌ TCP frame timeout or error")
-                logger.error(f"ESP8266 TCP connection failed")
+                print(f"[WiFiLink] ❌ HTTP error {response.status_code}")
+                logger.error(f"ESP8266 returned status {response.status_code}")
             return self.connected
 
         except Exception as e:
@@ -193,75 +197,49 @@ class WiFiLink:
 
     def send_frame(self, frame: bytes) -> bool:
         """
-        Send binary frame via raw TCP to ESP port 9000.
+        Send binary frame via HTTP POST (WebSocket fallback for now).
 
-        Protocol:
-        - Open TCP socket to ESP:9000
-        - Send frame bytes directly
-        - Wait for response frame (ACK/ERROR), 100ms timeout
-        - Close socket
-        - Return True if ACK (result code 0x00), False on timeout/error
+        Phase 3 design: WebSocket for real-time binary, but HTTP for compatibility.
 
         Args:
             frame: Binary frame to send (should include CRC8)
 
         Returns:
-            True if response is ACK (0x00), False if timeout/error/NACK
+            True if sent successfully, False on timeout/error
         """
         if not self.connected:
             logger.error("Not connected to ESP8266")
             return False
 
         with self._http_lock:
-            sock = None
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(self.TCP_TIMEOUT)
+                # For now, use HTTP POST with base64-encoded binary
+                # (real impl would use WebSocket, but this works for testing)
+                import base64
+                frame_b64 = base64.b64encode(frame).decode('ascii')
+                payload = {"command": "BINARY_FRAME", "data": frame_b64}
 
-                # Send frame
-                print(f"[WiFiLink] TCP send: {frame.hex()}")
-                sock.connect((self.ip, self.TCP_PORT))
-                sock.sendall(frame)
+                url = f"http://{self.ip}:{self.http_port}/api/command"
+                print(f"[WiFiLink] HTTP POST binary frame: {frame.hex()}")
 
-                # Wait for response
-                response = sock.recv(1024)
-                print(f"[WiFiLink] TCP recv: {response.hex()}")
+                response = self._session.post(
+                    url,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=0.1  # 100ms timeout
+                )
 
-                if not response:
-                    print(f"[WiFiLink] ❌ No response from ESP")
+                if response.status_code == 200:
+                    print(f"[WiFiLink] ✅ Frame sent")
+                    return True
+                else:
+                    print(f"[WiFiLink] ❌ HTTP error {response.status_code}")
                     return False
-
-                # Parse response frame
-                try:
-                    result_code, data = parse_response_frame(response)
-                    is_ack = (result_code == 0x00)  # ACK result code
-                    if is_ack:
-                        print(f"[WiFiLink] ✅ ACK received")
-                    else:
-                        print(f"[WiFiLink] ❌ Response code {result_code:02x}")
-                    return is_ack
-
-                except ValueError as e:
-                    print(f"[WiFiLink] ❌ Invalid response frame: {e}")
-                    logger.error(f"Invalid response frame: {e}")
-                    return False
-
-            except socket.timeout:
-                print(f"[WiFiLink] ⚠️ TCP timeout ({self.TCP_TIMEOUT}s)")
-                logger.warning(f"TCP timeout waiting for response")
-                return False
 
             except Exception as e:
-                print(f"[WiFiLink] ❌ TCP error: {e}")
-                logger.error(f"TCP send/recv error: {e}")
+                print(f"[WiFiLink] ❌ Send error: {e}")
+                logger.error(f"Frame send error: {e}")
                 return False
-
-            finally:
-                if sock:
-                    try:
-                        sock.close()
-                    except:
-                        pass
 
     def send_command(self, command: str, **kwargs) -> bool:
         """
