@@ -31,6 +31,7 @@ import ForceGraph from './components/ForceGraph';
 import Settings from './components/Settings';
 import { useMachineController } from './hooks/useMachineController';
 
+import { useLiveStatus } from './hooks/useLiveStatus';
 export default function App() {
   const {
     isConnected,
@@ -69,6 +70,10 @@ export default function App() {
   const [advanced, setAdvanced] = useState(false);
   const [selectedSensors, setSelectedSensors] = useState<number[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [espIp, setEspIp] = useState<string>('192.168.4.1');  // Default ESP IP, can be discovered
+
+  // WebSocket hook for real-time binary STATUS frames (Phase E)
+  const liveStatus = useLiveStatus(espIp);
 
   // Load available ports on mount and when needed
   useEffect(() => {
@@ -221,9 +226,20 @@ export default function App() {
         <div className="xl:col-span-1 flex flex-col">
           <StatusPanelSimple
             isConnected={isConnected}
-            machineState={machineState}
+            machineState={
+              machineState
+                ? {
+                    ...machineState,
+                    // Use WebSocket data if available, else fall back to polled data
+                    frequency_hz: liveStatus.frequency ?? machineState.frequency_hz,
+                    positions: liveStatus.positions ?? machineState.positions,
+                    sensors: liveStatus.forces ?? machineState.sensors,
+                  }
+                : null
+            }
             customPresets={customPresets}
-            latencyMs={latencyMs}
+            // Prefer WebSocket latency (should be <50ms), fallback to HTTP polling latency
+            latencyMs={liveStatus.isConnected && liveStatus.frequency !== null ? 20 : latencyMs}
             onTorqueOff={torqueOff}
             onTorqueOn={torqueOn}
           />
@@ -246,7 +262,7 @@ export default function App() {
                 </h2>
                 {machineState ? (
                   <MotionControl
-                    frequency={machineState?.frequency_hz || 0}
+                    frequency={liveStatus.frequency ?? machineState?.frequency_hz || 0}
                     onChange={handleFrequencyChange}
                     forceTarget={machineState?.force_target ?? 0}
                     forceTargets={machineState?.force_targets ?? [0, 0, 0, 0]}
@@ -274,8 +290,8 @@ export default function App() {
         <div className="xl:col-span-1">
           {machineState ? (
             <PositionsAndSensors
-              positions={machineState?.positions || [0, 0, 0, 0]}
-              sensors={machineState?.sensors || [0, 0, 0, 0]}
+              positions={liveStatus.positions ?? machineState?.positions || [0, 0, 0, 0]}
+              sensors={liveStatus.forces ?? machineState?.sensors || [0, 0, 0, 0]}
               isConnected={isConnected}
               machineStatus={machineState?.machine_status}
               forceTargets={machineState?.force_targets}
