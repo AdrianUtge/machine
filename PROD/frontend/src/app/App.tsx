@@ -262,7 +262,7 @@ export default function App() {
                 </h2>
                 {machineState ? (
                   <MotionControl
-                    frequency={liveStatus.frequency ?? machineState?.frequency_hz || 0}
+                    frequency={(liveStatus.frequency ?? machineState?.frequency_hz) || 0}
                     onChange={handleFrequencyChange}
                     forceTarget={machineState?.force_target ?? 0}
                     forceTargets={machineState?.force_targets ?? [0, 0, 0, 0]}
