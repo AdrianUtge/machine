@@ -188,9 +188,9 @@ def decode_frame(data: bytes) -> Tuple[str, bool]:
     frame_type = data[0]
     is_valid = validate_checksum(data)
 
-    if frame_type == 0xC or (frame_type >> 4) == 0xC:  # Command
+    if frame_type == 0x43:  # 'C' = Command
         desc = parse_command_frame(data)
-    elif frame_type == 0xR or (frame_type >> 4) == 0xR:  # Response
+    elif frame_type == 0x52:  # 'R' = Response
         desc = parse_response_frame(data)
     elif frame_type == 0x53:  # 'S' in ASCII, but protocol uses 0xS as marker
         desc = parse_status_frame(data)
@@ -223,7 +223,7 @@ class FrameDecoder:
             # Detect frame length based on type
             expected_len = None
 
-            if frame_type == 0xC:  # Command: 3–8 bytes
+            if frame_type == 0x43:  # Command: 3–8 bytes
                 # We'll assume frames complete when we see a complete command
                 # For now, use heuristic: if buffer > 8 bytes and no valid CRC found,
                 # try to find the next frame boundary
@@ -234,7 +234,7 @@ class FrameDecoder:
                         if validate_checksum(frame):
                             return self._extract_frame(try_len)
 
-            elif frame_type == 0xR:  # Response: 3 bytes minimum
+            elif frame_type == 0x52:  # Response: 3 bytes minimum
                 if len(self.buffer) >= 3:
                     frame = bytes(self.buffer[:3])
                     if validate_checksum(frame):
