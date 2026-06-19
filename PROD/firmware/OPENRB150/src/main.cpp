@@ -218,16 +218,33 @@ static void readAllForces() {
 
 static void dxlScan() {
     g_dxlCount = 0;
+    Serial.print("[dxlScan] Starting scan (IDs 1-"); Serial.print(DXL_SCAN_MAX);
+    Serial.print(", max "); Serial.print(N_TABLES); Serial.println(" motors)");
+
     for (uint8_t id = 1; id <= DXL_SCAN_MAX && g_dxlCount < N_TABLES; id++) {
+        Serial.print("[dxlScan] Pinging ID "); Serial.print(id); Serial.print("... ");
         if (dxl.ping(id)) {
+            Serial.println("✓ FOUND");
             g_dxlIds[g_dxlCount++] = id;
+        } else {
+            Serial.println("✗ no response");
         }
     }
+
+    Serial.print("[dxlScan] Total found: "); Serial.println(g_dxlCount);
+    for (uint8_t i = 0; i < g_dxlCount; i++) {
+        Serial.print("[dxlScan] Motor "); Serial.print(i); Serial.print(" = Dynamixel ID ");
+        Serial.println(g_dxlIds[i]);
+    }
+
+    Serial.println("[dxlScan] Initializing motors (torque off, mode=position, torque on)...");
     for (uint8_t i = 0; i < g_dxlCount; i++) {
         dxl.torqueOff(g_dxlIds[i]);
         dxl.setOperatingMode(g_dxlIds[i], OP_POSITION);
         dxl.torqueOn(g_dxlIds[i]);
+        Serial.print("[dxlScan] Motor "); Serial.print(i); Serial.println(" initialized");
     }
+    Serial.println("[dxlScan] Done!");
 }
 
 static float dxlPositionMm(uint8_t table) {
