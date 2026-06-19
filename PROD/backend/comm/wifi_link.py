@@ -251,5 +251,17 @@ class WiFiLink:
 
         return None
 
+    def read_line(self, timeout: Optional[float] = None) -> Optional[str]:
+        """Read one response line (compatibility with SerialLink interface).
+
+        For WebSocket, responses come as binary frames. This method is legacy
+        and not used in Phase 3 (frames are streamed directly). Returns None.
+        """
+        return None
+
+    def readline(self, timeout: Optional[float] = None) -> Optional[str]:
+        """Alias for read_line (SerialLink compatibility)."""
+        return self.read_line(timeout)
+
     def is_open(self) -> bool:
         return self.connected
