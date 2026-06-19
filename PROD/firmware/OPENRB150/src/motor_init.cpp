@@ -75,6 +75,15 @@ InitState initGetState() {
 
 // Phase 1: Fast descent to target height
 static void updatePhase1() {
+  static uint32_t lastPhase1Update = 0;
+  const uint32_t PHASE1_UPDATE_INTERVAL_MS = 500;  // Update position every 500ms (not every 50ms)
+
+  uint32_t now = millis();
+  if (now - lastPhase1Update < PHASE1_UPDATE_INTERVAL_MS) {
+    return;  // Too soon, skip this update
+  }
+  lastPhase1Update = now;
+
   bool all_at_target = true;
 
   for (uint8_t i = 0; i < g_dxlCount; i++) {
@@ -107,86 +116,108 @@ static void updatePhase1() {
 
 // Phase 2: Very slow descent until force target reached
 static void updatePhase2() {
+  static uint32_t lastPhase2Update = 0;
+  const uint32_t PHASE2_UPDATE_INTERVAL_MS = 500;  // Update position every 500ms
+
+  uint32_t now = millis();
+
+  // Always read forces every cycle
   readAllForces();
 
-  // Calculate phase 2 step size: descent_rate_mm_per_min / cycles_per_minute
-  // descent_rate_mm_per_min = 3.33 (10mm/3min)
-  // cycles_per_minute = 60000ms / 50ms = 1200
-  // step_mm_per_cycle = 3.33 / 1200 = 0.002775 mm
-  float step_mm_per_cycle = g_initState.descent_rate_mm_per_min / 1200.0f;
+  // Only update positions every 500ms
+  if (now - lastPhase2Update >= PHASE2_UPDATE_INTERVAL_MS) {
+    lastPhase2Update = now;
 
-  bool all_complete = true;
-  uint8_t completed_count = 0;
+    // Calculate phase 2 step size: descent_rate_mm_per_min / updates_per_minute
+    // descent_rate_mm_per_min = 3.33 (10mm/3min)
+    // With 500ms updates: updates_per_minute = 120
+    // step_mm_per_update = 3.33 / 120 = 0.02775 mm
+    float step_mm_per_update = g_initState.descent_rate_mm_per_min / 120.0f;
 
-  for (uint8_t i = 0; i < g_dxlCount; i++) {
-    if (g_initState.complete[i]) {
-      completed_count++;
-      continue;
+    bool all_complete = true;
+    uint8_t completed_count = 0;
+
+    for (uint8_t i = 0; i < g_dxlCount; i++) {
+      if (g_initState.complete[i]) {
+        completed_count++;
+        continue;
+      }
+
+      float current_force = g_force[i];
+
+      // Track peak force
+      if (current_force > g_initState.force_peaks[i]) {
+        g_initState.force_peaks[i] = current_force;
+      }
+
+      // Check if force target reached (mV units from main.cpp readForcemV)
+      if (current_force >= (g_forceTarget[i] - FORCE_DEADBAND)) {
+        g_initState.complete[i] = true;
+        g_initState.active_motors &= ~(1 << i);
+        completed_count++;
+      } else {
+        // Continue descending
+        float current_mm = dxlPositionMm(i);
+        float next_mm = current_mm - step_mm_per_update;
+        dxlGotoMm(i, next_mm);
+        all_complete = false;
+      }
     }
 
-    float current_force = g_force[i];
-
-    // Track peak force
-    if (current_force > g_initState.force_peaks[i]) {
-      g_initState.force_peaks[i] = current_force;
-    }
-
-    // Check if force target reached (mV units from main.cpp readForcemV)
-    if (current_force >= (g_forceTarget[i] - FORCE_DEADBAND)) {
-      g_initState.complete[i] = true;
-      g_initState.active_motors &= ~(1 << i);
-      completed_count++;
+    // Check if all motors complete or timeout
+    if (all_complete) {
+      g_initState.phase = INIT_PHASE3_FORCE_HOLD;
+      g_initState.progress_percent = 80;
     } else {
-      // Continue descending
-      float current_mm = dxlPositionMm(i);
-      float next_mm = current_mm - step_mm_per_cycle;
-      dxlGotoMm(i, next_mm);
-      all_complete = false;
+      // Phase 2 progress: 30% + (50% * completed_count / dxlCount)
+      g_initState.progress_percent = 30 + (50 * completed_count) / g_dxlCount;
     }
-  }
-
-  // Check if all motors complete or timeout
-  if (all_complete) {
-    g_initState.phase = INIT_PHASE3_FORCE_HOLD;
-    g_initState.progress_percent = 80;
-  } else {
-    // Phase 2 progress: 30% + (50% * completed_count / dxlCount)
-    g_initState.progress_percent = 30 + (50 * completed_count) / g_dxlCount;
   }
 }
 
 // Phase 3: Verify force stability
 static void updatePhase3() {
+  static uint32_t lastPhase3Update = 0;
+  const uint32_t PHASE3_UPDATE_INTERVAL_MS = 500;  // Check stability every 500ms
+
+  uint32_t now = millis();
+
+  // Always read forces every cycle
   readAllForces();
 
-  bool all_stable = true;
-  uint8_t stable_count = 0;
+  // Only check/adjust positions every 500ms
+  if (now - lastPhase3Update >= PHASE3_UPDATE_INTERVAL_MS) {
+    lastPhase3Update = now;
 
-  for (uint8_t i = 0; i < g_dxlCount; i++) {
-    float current_force = g_force[i];
-    float target = g_forceTarget[i];
+    bool all_stable = true;
+    uint8_t stable_count = 0;
 
-    // Check if force within deadband
-    if (current_force >= (target - FORCE_DEADBAND) &&
-        current_force <= (target + FORCE_DEADBAND)) {
-      stable_count++;
-    } else {
-      all_stable = false;
-      // If force dropped below target, continue descending slightly
-      if (current_force < (target - FORCE_DEADBAND)) {
-        float current_mm = dxlPositionMm(i);
-        float next_mm = current_mm - 0.01f;  // Very tiny step
-        dxlGotoMm(i, next_mm);
+    for (uint8_t i = 0; i < g_dxlCount; i++) {
+      float current_force = g_force[i];
+      float target = g_forceTarget[i];
+
+      // Check if force within deadband
+      if (current_force >= (target - FORCE_DEADBAND) &&
+          current_force <= (target + FORCE_DEADBAND)) {
+        stable_count++;
+      } else {
+        all_stable = false;
+        // If force dropped below target, continue descending slightly
+        if (current_force < (target - FORCE_DEADBAND)) {
+          float current_mm = dxlPositionMm(i);
+          float next_mm = current_mm - 0.01f;  // Very tiny step
+          dxlGotoMm(i, next_mm);
+        }
       }
     }
-  }
 
-  // Transition to complete if all stable
-  if (all_stable) {
-    g_initState.phase = INIT_COMPLETE;
-    g_initState.progress_percent = 100;
-  } else {
-    g_initState.progress_percent = 80 + (20 * stable_count) / g_dxlCount;
+    // Transition to complete if all stable
+    if (all_stable) {
+      g_initState.phase = INIT_COMPLETE;
+      g_initState.progress_percent = 100;
+    } else {
+      g_initState.progress_percent = 80 + (20 * stable_count) / g_dxlCount;
+    }
   }
 }
 
