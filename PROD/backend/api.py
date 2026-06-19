@@ -377,7 +377,7 @@ def connect(request: ConnectRequest):
                     )
 
                 # Create WiFi link
-                wifi_link = WiFiLink(ip=ip, port=port, auth_token=key)
+                wifi_link = WiFiLink(ip=ip, http_port=port, auth_token=key)
 
                 # Test connection to ESP8266
                 print(f"[WiFi] Testing connectivity to {ip}:{port}...")
