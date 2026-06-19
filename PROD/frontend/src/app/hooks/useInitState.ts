@@ -17,7 +17,19 @@ interface InitConfig {
   auto_init_interval: number;
 }
 
-const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:8000/api";
+// Get API base URL from window location or fallback to localhost
+const getApiBase = () => {
+  const hostname = window.location.hostname;
+  const port = window.location.port ? `:${window.location.port}` : '';
+  // If on localhost:3000 (dev), API is on localhost:8000
+  if (hostname === 'localhost' || hostname === '127.0.0.1') {
+    return `http://${hostname}:8000/api`;
+  }
+  // Otherwise use same host (production setup with reverse proxy)
+  return `http://${hostname}${port}/api`;
+};
+
+const API_BASE = getApiBase();
 
 export const useInitState = () => {
   const [initStatus, setInitStatus] = useState<InitStatus | null>(null);
