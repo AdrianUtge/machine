@@ -706,9 +706,17 @@ void loop() {
     }
 
     // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
+    // BUT: delay streaming for 3 seconds at startup to avoid flooding SoftwareSerial
     static uint32_t lastStreamMs = 0;
+    static bool startup_complete = false;
     uint32_t now = millis();
-    if (now - lastStreamMs >= STREAM_PERIOD_MS) {
+
+    if (!startup_complete && now > 3000) {
+        startup_complete = true;
+        lastStreamMs = now;  // Reset timer after startup delay
+    }
+
+    if (startup_complete && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
         lastStreamMs = now;
         sendStatus();
     }
