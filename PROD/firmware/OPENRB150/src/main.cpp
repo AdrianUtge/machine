@@ -718,15 +718,12 @@ void loop() {
     static uint8_t bin_rx_buffer[64];
     static size_t bin_rx_pos = 0;
     static uint32_t bin_rx_last_byte_ms = 0;
-    char dbg[32];  // Debug buffer for snprintf
 
     while (LINK.available()) {
         uint8_t byte = LINK.read();
         bin_rx_last_byte_ms = millis();
 
-        // Debug: print incoming bytes
-        snprintf(dbg, sizeof(dbg), "[Serial3] RX: 0x%02X", (int)byte);
-        Serial.println(dbg);
+        // Skip debug logging in hot path (too slow)
 
         // Check if it's a binary frame (starts with 0x43 = 'C' for command)
         if (byte == 0x43 || (bin_rx_pos > 0 && bin_rx_pos < sizeof(bin_rx_buffer))) {
@@ -750,20 +747,13 @@ void loop() {
 
                 if (calc_crc == bin_rx_buffer[bin_rx_pos - 1]) {
                     // Valid CRC! Frame is complete
-                    snprintf(dbg, sizeof(dbg), "[Serial3] Binary frame: %u bytes", bin_rx_pos);
-                    Serial.println(dbg);
-                    Serial.print("[Serial3] Hex: ");
-                    for (size_t i = 0; i < bin_rx_pos; i++) {
-                        snprintf(dbg, sizeof(dbg), "%02X ", bin_rx_buffer[i]);
-                        Serial.print(dbg);
-                    }
-                    Serial.println();
-                    // Dispatch binary command
+                    // Dispatch binary command (no logging to avoid CPU lock)
                     handleBinaryCommand(bin_rx_buffer, bin_rx_pos);
 
                     // Mark ESP as ready (handshake: ESP sent first command)
                     if (!esp_ready) {
                         esp_ready = true;
+                        // Only log once at handshake, not every frame
                         Serial.println("[Serial3] ✓ ESP ready! Starting telemetry stream");
                     }
                     bin_rx_pos = 0;
@@ -772,8 +762,7 @@ void loop() {
 
             // Safety: if buffer gets too large, reset
             if (bin_rx_pos >= sizeof(bin_rx_buffer)) {
-                Serial.println("[Serial3] Buffer overflow, resetting");
-                bin_rx_pos = 0;
+                bin_rx_pos = 0;  // Silently discard (avoid CPU lock)
             }
         } else {
             // Text mode: wait for newline
@@ -788,9 +777,7 @@ void loop() {
 
     // Timeout: if no bytes for 100ms, discard incomplete binary frame
     if (bin_rx_pos > 0 && (millis() - bin_rx_last_byte_ms > 100)) {
-        snprintf(dbg, sizeof(dbg), "[Serial3] Timeout! Frame discarded (%u bytes)", bin_rx_pos);
-        Serial.println(dbg);
-        bin_rx_pos = 0;
+        bin_rx_pos = 0;  // Silently discard (avoid CPU lock)
     }
 
     // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
