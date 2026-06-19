@@ -559,6 +559,20 @@ static void dispatch(String line) {
         dxl.ledOff(g_dxlIds[motor_id]);
         sendAck("BLINK_MOTOR");
     }
+    else if (cmd == "SCAN_DXL") {
+        // Debug: force re-scan and report results
+        Serial.println("[SCAN_DXL] Scanning...");
+        dxlScan();
+        // Send results as comma-separated list
+        LINK.print("DXL_SCAN:");
+        LINK.print(g_dxlCount);
+        for (uint8_t i = 0; i < g_dxlCount; i++) {
+            LINK.print(",");
+            LINK.print(g_dxlIds[i]);
+        }
+        LINK.println();
+        sendAck("SCAN_DXL");
+    }
     else if (cmd == "SET_RESISTANCE") {
         // Format: SET_RESISTANCE:<ohm> (both boards) or SET_RESISTANCE:<boardId>:<ohm>
         int col = arg.indexOf(':');
