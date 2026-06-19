@@ -25,6 +25,7 @@
 
 #include <Arduino.h>
 #include <Dynamixel2Arduino.h>
+#include "motor_init.h"
 
 // ===== Configuration =======================================================
 
@@ -146,6 +147,18 @@ static float    g_force[4] = { 0, 0, 0, 0 };        // mesures (N)
 
 static uint8_t  g_dxlIds[4] = { 0, 0, 0, 0 };
 static uint8_t  g_dxlCount = 0;
+
+// === Calibration & Limites Dynamixel ========================================
+// Position limites (mm) pour chaque table — établies lors du HOME
+static float    g_positionMin[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+static float    g_positionMax[4] = { 96.0f, 96.0f, 96.0f, 96.0f };  // a priori
+
+// Position cible mémorisée
+static float    g_positionTarget[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+// Paramètres calibration (depuis .machine_config.ini via ESP)
+static float    DXL_TORQUE_THRESHOLD = 800.0f;   // seuil de détection limite (0–1023)
+static uint16_t DXL_CALIB_STEP_DELAY_MS = 50;    // délai polling lors calibration
 
 // ===== Stepper : Timer TC3 =================================================
 
@@ -271,6 +284,81 @@ static float dxlPositionMm(uint8_t table) {
 static void dxlGotoMm(uint8_t table, float mm) {
     if (table >= g_dxlCount) return;
     dxl.setGoalPosition(g_dxlIds[table], mm * DXL_PER_MM);
+    g_positionTarget[table] = mm;  // Mémoriser cible
+}
+
+// Lire le couple/charge du moteur (0–1023 unités Dynamixel)
+static float dxlGetLoadPercent(uint8_t table) {
+    if (table >= g_dxlCount) return 0.0f;
+    return (float)dxl.getPresentLoad(g_dxlIds[table]);
+}
+
+// Calibration d'une table : remontée progressive, détection fin de course par torque
+// Retourne true si succès, false si timeout/erreur
+static bool calibrateTable(uint8_t table, uint16_t timeout_ms = 30000) {
+    if (table >= g_dxlCount) {
+        Serial.print("[calibrate] Table "); Serial.print(table);
+        Serial.println(" : moteur absent (dxlCount)");
+        return false;
+    }
+
+    const float MAX_GOTO_MM = 100.0f;  // position max a priori
+    const float CALIB_RETREAT_MM = 2.0f;  // recul après détection limite
+    uint32_t start_ms = millis();
+
+    Serial.print("[calibrate] Table "); Serial.print(table); Serial.println(" : démarrage remontée");
+
+    // Remontée progressive vers MAX
+    dxlGotoMm(table, MAX_GOTO_MM);
+
+    // Polling du torque jusqu'à limite ou timeout
+    float load_max = 0.0f;
+    float calib_position = 0.0f;
+
+    while (millis() - start_ms < timeout_ms) {
+        float current_pos = dxlPositionMm(table);
+        float current_load = dxlGetLoadPercent(table);
+
+        // Serial.print("[calibrate] T"); Serial.print(table);
+        // Serial.print(" pos="); Serial.print(current_pos);
+        // Serial.print(" load="); Serial.println(current_load);
+
+        if (current_load > DXL_TORQUE_THRESHOLD) {
+            // Fin de course détectée
+            calib_position = current_pos;
+            Serial.print("[calibrate] Table "); Serial.print(table);
+            Serial.print(" : FIN DE COURSE détectée à "); Serial.print(calib_position);
+            Serial.print(" mm (load="); Serial.print(current_load); Serial.println(")");
+            break;
+        }
+
+        delay(DXL_CALIB_STEP_DELAY_MS);
+    }
+
+    // Vérifier si fin de course trouvée
+    if (calib_position < 1.0f) {
+        Serial.print("[calibrate] Table "); Serial.print(table);
+        Serial.println(" : TIMEOUT - aucune fin de course détectée");
+        return false;
+    }
+
+    // Recul de 2 mm (dégagement)
+    float retreat_pos = max(0.0f, calib_position - CALIB_RETREAT_MM);
+    Serial.print("[calibrate] Table "); Serial.print(table);
+    Serial.print(" : recul à "); Serial.print(retreat_pos); Serial.println(" mm");
+    dxlGotoMm(table, retreat_pos);
+
+    delay(500);  // attendre stabilisation
+
+    // Sauvegarder limites
+    g_positionMin[table] = 0.0f;
+    g_positionMax[table] = calib_position - CALIB_RETREAT_MM;
+
+    Serial.print("[calibrate] Table "); Serial.print(table);
+    Serial.print(" : SUCCÈS limites=["); Serial.print(g_positionMin[table]);
+    Serial.print(", "); Serial.print(g_positionMax[table]); Serial.println("]");
+
+    return true;
 }
 
 // LED Dynamixel = feedback visuel du mode : RUNNING -> clignotement,
@@ -347,6 +435,8 @@ static ForceControl getControlPhaseAndStep(uint8_t table_i, float current_mm, fl
 }
 
 static void updateForceLoop() {
+    // Skip force control loop while init is running
+    if (initIsRunning()) return;
     if (g_mode != Mode::RUNNING) return;
 
     bool nowInWindow = isInForceWindow();
@@ -439,6 +529,11 @@ static void sendResponseBinary(uint8_t result_code) {
 static void sendAck(const String& m)  { LINK.print("ACK:");   LINK.println(m); }
 static void sendDone(const String& m) { LINK.print("DONE:");  LINK.println(m); }
 static void sendErr(const String& m)  { LINK.print("ERROR:"); LINK.println(m); }
+static void sendCalib(uint8_t table, float min_mm, float max_mm) {
+    LINK.print("CALIB:"); LINK.print(table);
+    LINK.print(":"); LINK.print(min_mm, 1);
+    LINK.print(":"); LINK.println(max_mm, 1);
+}
 
 static void sendStatusBinary() {
     // Binary STATUS frame: [0xS] [FREQ:2 LE] [POS[4]:8] [FORCE[4]:8] [CRC8]
@@ -520,13 +615,26 @@ static void handleStop() {
 static void handleHome() {
     g_mode = Mode::HOMING;
     g_stepCount = 0;
-    // ÉTAPE 2 : référencer les tables si nécessaire.
-    g_homed = true;
-    g_mode = Mode::READY;
-    if (!binary_mode_active) {
-        sendAck("HOME");
-        sendDone("HOME");
+
+    if (!binary_mode_active) sendAck("HOME");
+
+    // Auto-calibration des tables : remontée + détection fin de course par torque
+    Serial.println("[handleHome] Calibration des 4 tables...");
+    bool all_success = true;
+    for (uint8_t i = 0; i < g_dxlCount; i++) {
+        if (!calibrateTable(i)) {
+            all_success = false;
+            if (!binary_mode_active) sendErr("HOME_CALIB_FAIL");
+        } else {
+            // Envoyer le statut de calibration
+            if (!binary_mode_active) sendCalib(i + 1, g_positionMin[i], g_positionMax[i]);
+        }
     }
+
+    g_homed = all_success;
+    g_mode = all_success ? Mode::READY : Mode::ERROR;
+
+    if (!binary_mode_active) sendDone("HOME");
 }
 
 static void handleHardReset() {
@@ -537,7 +645,63 @@ static void handleHardReset() {
     g_speed = 100;
     g_frequency = 0.8f;
     for (uint8_t i = 0; i < N_TABLES; i++) g_forceTarget[i] = 0;
+    initStop();  // Stop init if running
     if (!binary_mode_active) sendAck("HARD_RESET");
+}
+
+static void handleInitStart(const String& arg) {
+    // Format: INIT_START:<target_pos_mm>:<descent_rate_mm_per_min>
+    int colon1 = arg.indexOf(':');
+    if (colon1 < 0) {
+        if (!binary_mode_active) sendErr("INIT_START_FORMAT");
+        return;
+    }
+    float target_mm = arg.substring(0, colon1).toFloat();
+    float descent_rate = arg.substring(colon1 + 1).toFloat();
+
+    initStart(target_mm, descent_rate);
+    if (!binary_mode_active) sendAck("INIT_START");
+}
+
+static void handleInitStop() {
+    initStop();
+    if (!binary_mode_active) sendAck("INIT_STOP");
+}
+
+static void handleInitStatus() {
+    InitState state = initGetState();
+    const char* phase_str;
+    switch (state.phase) {
+        case INIT_IDLE:              phase_str = "IDLE"; break;
+        case INIT_PHASE1_DESCENT:    phase_str = "PHASE1"; break;
+        case INIT_PHASE2_FINE_DESCENT: phase_str = "PHASE2"; break;
+        case INIT_PHASE3_FORCE_HOLD: phase_str = "PHASE3"; break;
+        case INIT_COMPLETE:          phase_str = "COMPLETE"; break;
+        case INIT_ERROR:             phase_str = "ERROR"; break;
+        default:                     phase_str = "UNKNOWN"; break;
+    }
+
+    LINK.print("INIT_STATUS:");
+    LINK.print(phase_str);
+    LINK.print(',');
+    LINK.print(state.progress_percent);
+    LINK.print(',');
+    LINK.print(state.elapsed_ms);
+    LINK.print(',');
+    LINK.print(state.force_peaks[0], 1);
+    LINK.print(',');
+    LINK.print(state.force_peaks[1], 1);
+    LINK.print(',');
+    LINK.print(state.force_peaks[2], 1);
+    LINK.print(',');
+    LINK.print(state.force_peaks[3], 1);
+    LINK.print(',');
+    // complete_mask: bitmask of completed motors
+    uint8_t mask = 0;
+    for (uint8_t i = 0; i < N_TABLES; i++) {
+        if (state.complete[i]) mask |= (1 << i);
+    }
+    LINK.println(mask, HEX);
 }
 
 // SET_FORCE:<N>           -> consigne globale (les 4 cellules)
@@ -579,11 +743,41 @@ static void handleGoto(const String& arg) {
     }
     int table = arg.substring(0, colon).toInt();
     float mm  = arg.substring(colon + 1).toFloat();
+
+    // Validation: table number
     if (table < 1 || table > N_TABLES) {
         if (!binary_mode_active) sendErr("GOTO_TABLE");
         return;
     }
-    dxlGotoMm(table - 1, mm);
+
+    // Validation: machine state (READY ou IDLE uniquement)
+    if (g_mode != Mode::READY && g_mode != Mode::IDLE) {
+        if (!binary_mode_active) sendErr("GOTO_STATE");
+        return;
+    }
+
+    uint8_t table_idx = table - 1;
+
+    // Validation: limites de position calibrées
+    if (mm < g_positionMin[table_idx] || mm > g_positionMax[table_idx]) {
+        if (!binary_mode_active) {
+            sendErr("GOTO_LIMIT");
+            Serial.print("[GOTO] Table "); Serial.print(table);
+            Serial.print(" position "); Serial.print(mm);
+            Serial.print(" hors limites ["); Serial.print(g_positionMin[table_idx]);
+            Serial.print(", "); Serial.print(g_positionMax[table_idx]); Serial.println("]");
+        }
+        return;
+    }
+
+    // Validation: moteur présent
+    if (table_idx >= g_dxlCount) {
+        if (!binary_mode_active) sendErr("SLAVE_OFFLINE");
+        return;
+    }
+
+    // Exécution
+    dxlGotoMm(table_idx, mm);
     if (!binary_mode_active) sendAck("GOTO");
 }
 
@@ -600,6 +794,9 @@ static void dispatch(String line) {
     else if (cmd == "START")      handleStart();
     else if (cmd == "STOP")       handleStop();
     else if (cmd == "HARD_RESET") handleHardReset();
+    else if (cmd == "INIT_START") handleInitStart(arg);
+    else if (cmd == "INIT_STOP")  handleInitStop();
+    else if (cmd == "INIT_STATUS") handleInitStatus();
     else if (cmd == "GET_STATUS") { sendStatus(); sendAck("GET_STATUS"); }
     else if (cmd == "SET_FREQ") {
         float f = arg.toFloat();
@@ -754,15 +951,34 @@ static void handleBinaryCommand(const uint8_t* frame, size_t len) {
                 }
             }
             break;
-        case 0x20:  // GOTO
+        case 0x20:  // GOTO (binary: optimized)
             if (len >= 5) {
                 uint8_t table = frame[2];
                 uint16_t pos_mm10 = frame[3] | (frame[4] << 8);
                 float pos_mm = pos_mm10 / 10.0f;
+
+                // Validation: table number
                 if (table < 1 || table > N_TABLES) {
                     sendResponseBinary(RESP_ERROR_INVALID_ARG);
+                    break;
+                }
+
+                // Validation: machine state
+                if (g_mode != Mode::READY && g_mode != Mode::IDLE) {
+                    sendResponseBinary(RESP_ERROR_INVALID_ARG);
+                    break;
+                }
+
+                uint8_t table_idx = table - 1;
+
+                // Validation: limites & slave présent
+                if (table_idx >= g_dxlCount ||
+                    pos_mm < g_positionMin[table_idx] ||
+                    pos_mm > g_positionMax[table_idx]) {
+                    sendResponseBinary(RESP_ERROR_INVALID_ARG);
                 } else {
-                    handleGoto(String(table) + ":" + String(pos_mm, 1));
+                    // Direct call (no String reconstruction)
+                    dxlGotoMm(table_idx, pos_mm);
                     sendResponseBinary(RESP_ACK);
                     handled = true;
                 }
@@ -921,6 +1137,7 @@ void loop() {
     static uint32_t lastForceLoopUpdateMs = 0;
     if (now - lastForceLoopUpdateMs >= FORCE_LOOP_INTERVAL_MS) {
         lastForceLoopUpdateMs = now;
-        updateForceLoop();
+        initUpdate();      // Update init state machine (50ms interval)
+        updateForceLoop(); // Update force control loop (skipped during init)
     }
 }

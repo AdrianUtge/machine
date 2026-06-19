@@ -20,7 +20,22 @@ MAINTAINER NOTES:
 ===============================================================================
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from core.init_config import InitConfig
+
+
+# --- Init status ---------------------------------------------------------
+
+@dataclass
+class InitStatus:
+    """Motor initialization process status."""
+    running: bool = False
+    phase: str = "IDLE"  # IDLE, PHASE1, PHASE2, PHASE3, COMPLETE, ERROR
+    progress_percent: int = 0
+    elapsed_ms: int = 0
+    force_peaks: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+    complete_motors: list[bool] = field(default_factory=lambda: [False, False, False, False])
+    error_code: int = 0
 
 
 # --- Etat machine --------------------------------------------------------
@@ -51,6 +66,10 @@ class MachineState:
     # Horodatage (monotonic) de la dernière ligne reçue de l'OpenRB.
     # Sert à déduire l'état du slave : ONLINE = data reçue récemment, OFFLINE sinon.
     last_data_ts: float = 0.0
+
+    # Init process state
+    init_status: InitStatus = field(default_factory=InitStatus)
+    init_config: 'InitConfig' = None  # Will be populated from machine_config.ini
 
     def __post_init__(self):
         if self.positions is None:

@@ -111,6 +111,21 @@ def cmd_set_resistance(resistance_ohm: int, board_id: int | None = None) -> str:
     return f"SET_RESISTANCE:{board_id}:{resistance_ohm}"
 
 
+def cmd_init_start(target_pos_mm: float, descent_rate_mm_per_min: float) -> str:
+    """Start motor initialization process."""
+    return f"INIT_START:{target_pos_mm}:{descent_rate_mm_per_min}"
+
+
+def cmd_init_stop() -> str:
+    """Stop init immediately."""
+    return "INIT_STOP"
+
+
+def cmd_init_status() -> str:
+    """Poll init status (non-blocking)."""
+    return "INIT_STATUS"
+
+
 # --- Parsing -------------------------------------------------------------
 
 def parse_response(line: str, state: MachineState) -> None:
@@ -165,3 +180,29 @@ def parse_response(line: str, state: MachineState) -> None:
                 print(f"[DXL_SCAN] ⚠️  WARNING: Expected 4 motors, found only {count}")
         except (ValueError, IndexError):
             print(f"[DXL_SCAN] ❌ Failed to parse: {value}")
+    elif key == "INIT_STATUS":
+        # Parse: "INIT_STATUS:PHASE2,50,30000,1.2,2.5,1.8,2.1,a"
+        # phase, progress, elapsed_ms, force0-3, complete_mask
+        try:
+            parts = value.split(",")
+            if len(parts) >= 8:
+                from core.init_config import InitConfig
+                from core.state import InitStatus
+                phase = parts[0].strip()
+                progress = int(parts[1].strip())
+                elapsed_ms = int(parts[2].strip())
+                force_peaks = [float(p.strip()) for p in parts[3:7]]
+                complete_mask = int(parts[7].strip(), 16)  # hex mask
+                complete = [(complete_mask >> i) & 1 for i in range(4)]
+
+                state.init_status = InitStatus(
+                    running=(phase not in ["IDLE", "COMPLETE", "ERROR"]),
+                    phase=phase,
+                    progress_percent=progress,
+                    elapsed_ms=elapsed_ms,
+                    force_peaks=force_peaks,
+                    complete_motors=complete,
+                    error_code=0
+                )
+        except (ValueError, IndexError) as e:
+            print(f"[INIT_STATUS] Failed to parse: {value} ({e})")

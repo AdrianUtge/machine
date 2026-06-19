@@ -52,6 +52,12 @@ _DEFAULTS = {
     "esp8266": {"http_port": "8080"},
     "logging": {"level": "INFO"},
     "calibration": {"resistance": "330"},
+    "dynamixel": {
+        "vis_pitch_mm": "1.0",
+        "stroke_min_mm": "0.0",
+        "stroke_max_mm": "96.0",
+        "torque_threshold": "800",
+    },
 }
 
 # Cache module : on ne lit le fichier qu'une fois par process.
@@ -161,6 +167,16 @@ def log_level() -> str:
 def calibration() -> dict:
     return {
         "resistance": get_int("calibration", "resistance", 330),
+    }
+
+
+def dynamixel() -> dict:
+    """Paramètres des tables Dynamixel (vis de guidage, débattement, torque)."""
+    return {
+        "vis_pitch_mm": get_float("dynamixel", "vis_pitch_mm", 1.0),
+        "stroke_min_mm": get_float("dynamixel", "stroke_min_mm", 0.0),
+        "stroke_max_mm": get_float("dynamixel", "stroke_max_mm", 96.0),
+        "torque_threshold": get_int("dynamixel", "torque_threshold", 800),
     }
 
 

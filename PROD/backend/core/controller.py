@@ -38,6 +38,9 @@ from comm.protocol import (
     cmd_torque,
     cmd_blink_motor,
     cmd_set_resistance,
+    cmd_init_start,
+    cmd_init_stop,
+    cmd_init_status,
     parse_response,
 )
 from comm.serial_link import SerialLink
@@ -145,3 +148,17 @@ class MachineController:
         """
         if resistance_ohm in (30, 90):
             self._send(cmd_set_resistance(resistance_ohm, board_id))
+
+    def init_start(self, target_pos_mm: float | None = None, descent_rate: float | None = None) -> None:
+        """Start motor initialization process."""
+        if target_pos_mm is None:
+            target_pos_mm = self.state.init_config.target_position_mm if self.state.init_config else 50.0
+        if descent_rate is None:
+            descent_rate = self.state.init_config.descent_rate_mm_per_min if self.state.init_config else 3.33
+        self.state.init_status.running = True
+        self._send(cmd_init_start(target_pos_mm, descent_rate))
+
+    def init_stop(self) -> None:
+        """Stop init immediately."""
+        self.state.init_status.running = False
+        self._send(cmd_init_stop())

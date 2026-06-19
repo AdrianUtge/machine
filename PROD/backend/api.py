@@ -117,6 +117,16 @@ class SetResistanceRequest(BaseModel):
     resistance_ohm: int  # 30 or 90
     board_id: Optional[int] = None  # 0 (D4, cells 0-1) or 1 (D5, cells 2-3), None = both
 
+class InitStartRequest(BaseModel):
+    target_position_mm: Optional[float] = None
+    descent_rate_mm_per_min: Optional[float] = None
+
+class InitConfigRequest(BaseModel):
+    target_position_mm: float
+    descent_rate_mm_per_min: float
+    max_duration_s: int
+    auto_init_interval: int
+
 class CustomPreset(BaseModel):
     name: str
     frequency: float
@@ -727,6 +737,85 @@ def set_resistance(request: SetResistanceRequest):
         "resistance_ohm": request.resistance_ohm,
         "board_id": request.board_id,
     }
+
+@app.post("/api/init/start")
+def init_start(request: InitStartRequest):
+    """Start motor initialization process."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    controller.init_start(request.target_position_mm, request.descent_rate_mm_per_min)
+    log_action("command", "INIT_START")
+    _read_all_responses()
+
+    return {"success": True, "state": get_state_dict(controller.state)}
+
+@app.post("/api/init/stop")
+def init_stop():
+    """Stop init immediately."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    controller.init_stop()
+    log_action("command", "INIT_STOP")
+    _read_all_responses()
+
+    return {"success": True, "state": get_state_dict(controller.state)}
+
+@app.get("/api/init/status")
+def get_init_status():
+    """Get current init status (non-blocking poll)."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    status = controller.state.init_status
+    return {
+        "running": status.running,
+        "phase": status.phase,
+        "progress_percent": status.progress_percent,
+        "elapsed_ms": status.elapsed_ms,
+        "force_peaks": status.force_peaks,
+        "complete_motors": status.complete_motors,
+        "error_code": status.error_code,
+    }
+
+@app.get("/api/init/config")
+def get_init_config():
+    """Get init configuration."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    if controller.state.init_config is None:
+        from core.init_config import InitConfig
+        config = InitConfig()
+    else:
+        config = controller.state.init_config
+
+    return {
+        "target_position_mm": config.target_position_mm,
+        "descent_rate_mm_per_min": config.descent_rate_mm_per_min,
+        "max_duration_s": config.max_duration_s,
+        "auto_init_interval": config.auto_init_interval,
+    }
+
+@app.put("/api/init/config")
+def update_init_config(request: InitConfigRequest):
+    """Update init configuration."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    from core.init_config import InitConfig
+    config = InitConfig(
+        target_position_mm=request.target_position_mm,
+        descent_rate_mm_per_min=request.descent_rate_mm_per_min,
+        max_duration_s=request.max_duration_s,
+        auto_init_interval=request.auto_init_interval,
+    )
+    controller.state.init_config = config
+    # TODO: Persist to machine_config.ini
+
+    log_action("state", "INIT_CONFIG updated")
+    return {"success": True, "config": request.dict()}
 
 @app.post("/api/command/preset")
 def apply_preset(request: PresetRequest):
