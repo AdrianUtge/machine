@@ -33,8 +33,9 @@ export interface MachineState {
   force_targets?: number[];
   cycle_start?: number | null;  // epoch ms, start of the running cycle
   positions: number[];  // 4 table positions
-  sensors: number[];    // 4 force sensors (N, calibrated)
-  cell_volts?: number[];// 4 raw cell voltages (V) — for calibration
+  sensors: number[];    // 4 force sensors (N, calibrated) — deprecated
+  cell_volts_mv?: number[];  // 4 raw cell voltages (mV) — for calibration
+  cell_forces_N?: number[];  // 4 forces in Newton (calibrated)
   motor_current: string | null;
   errors: string;
   slave_status: string;
