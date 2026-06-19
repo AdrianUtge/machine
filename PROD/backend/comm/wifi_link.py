@@ -243,15 +243,14 @@ class WiFiLink:
 
     def send_command(self, command: str, **kwargs) -> bool:
         """
-        Send a command to ESP8266 via binary TCP frame.
+        Send a command to ESP8266 via HTTP POST /api/command (JSON).
 
-        Translates REST command names to binary command IDs:
-        - START → 0x01
-        - STOP → 0x02
-        - HARD_RESET → 0x03
-        - FREQUENCY + frequency=Hz → 0x10 + u8(Hz)
-        - FORCE + sensor=N, force=mV → 0x11 + [u8(N), u16_LE(mV)]
-        - GOTO + table=N, position=mm → 0x20 + [u8(N), u16_LE(mm×10)]
+        Translates REST command names to JSON:
+        - START → {"command": "START"}
+        - STOP → {"command": "STOP"}
+        - FREQUENCY → {"command": "FREQUENCY", "frequency": Hz}
+        - FORCE → {"command": "FORCE", "force": N, "sensor": (optional) 1-4}
+        - GOTO → {"command": "GOTO", "table": 1-4, "position": mm}
         - etc.
 
         Args:
@@ -259,82 +258,44 @@ class WiFiLink:
             **kwargs: Command-specific parameters
 
         Returns:
-            True if ACK received, False on timeout/error
+            True if sent successfully, False on error
         """
         if not self.connected:
             logger.error("Not connected to ESP8266")
             return False
 
         cmd_upper = command.upper()
-        args = b''
+        payload = {"command": cmd_upper.upper()}
 
-        # Map REST command to binary frame
+        # Add parameters
+        if kwargs:
+            payload.update(kwargs)
+
+        url = f"http://{self.ip}:{self.http_port}/api/command"
+
         try:
-            if cmd_upper == 'START':
-                frame = build_command_frame(0x01, b'')
+            print(f"[WiFiLink] HTTP POST: {payload}")
 
-            elif cmd_upper == 'STOP':
-                frame = build_command_frame(0x02, b'')
+            with self._http_lock:
+                response = self._session.post(
+                    url,
+                    headers=self.headers,
+                    json=payload,
+                    timeout=self.timeout
+                )
 
-            elif cmd_upper == 'HARD_RESET' or cmd_upper == 'HOME':
-                frame = build_command_frame(0x03, b'')
-
-            elif cmd_upper == 'FREQUENCY':
-                freq_hz = int(kwargs.get('frequency', 0))
-                freq_hz = max(0, min(100, freq_hz))  # Clamp 0-100 Hz
-                frame = build_command_frame(0x10, bytes([freq_hz]))
-
-            elif cmd_upper == 'FORCE':
-                # FORCE can be global (all cells) or per-cell
-                sensor = kwargs.get('sensor')
-                force_mv = int(kwargs.get('force', 0))
-                force_mv = max(0, min(50000, force_mv))  # Clamp 0-50000 mV
-
-                if sensor is not None:
-                    # Per-cell: SET_FORCE (0x11)
-                    sensor = int(sensor)
-                    sensor = max(1, min(4, sensor))  # Clamp 1-4
-                    args = bytes([sensor]) + struct.pack('<H', force_mv)
-                    frame = build_command_frame(0x11, args)
-                else:
-                    # Global: SET_FORCE_ALL (0x12)
-                    args = struct.pack('<H', force_mv)
-                    frame = build_command_frame(0x12, args)
-
-            elif cmd_upper == 'GOTO':
-                table = int(kwargs.get('table', 1))
-                position_mm = float(kwargs.get('position', 0))
-                table = max(1, min(4, table))  # Clamp 1-4
-                # Position in mm×10
-                position_units = int(position_mm * 10)
-                position_units = max(0, min(10000, position_units))
-                args = bytes([table]) + struct.pack('<H', position_units)
-                frame = build_command_frame(0x20, args)
-
-            elif cmd_upper == 'MOTOR_BLINK':
-                motor_id = int(kwargs.get('motor_id', 0))
-                duration_ms = int(kwargs.get('duration_ms', 500))
-                motor_id = max(0, min(255, motor_id))
-                duration_ms = max(0, min(65535, duration_ms))
-                args = bytes([motor_id]) + struct.pack('<H', duration_ms)
-                frame = build_command_frame(0x30, args)
-
-            elif cmd_upper == 'SCAN_DXL':
-                frame = build_command_frame(0x31, b'')
-
-            elif cmd_upper == 'SET_RESISTANCE':
-                resistance_ohm = int(kwargs.get('resistance_ohm', 30))
-                resistance_ohm = max(0, min(65535, resistance_ohm))
-                args = struct.pack('<H', resistance_ohm)
-                frame = build_command_frame(0x40, args)
-
-            elif cmd_upper == 'STATUS' or cmd_upper == 'GET_STATUS':
-                frame = build_command_frame(0xF0, b'')
-
+            if response.status_code == 200:
+                print(f"[WiFiLink] ✅ Command '{cmd_upper}' sent")
+                return True
             else:
-                print(f"[WiFiLink] ❌ Unknown command: {cmd_upper}")
-                logger.error(f"Unknown command: {cmd_upper}")
+                print(f"[WiFiLink] ❌ HTTP error {response.status_code}: {response.text}")
+                logger.error(f"HTTP error {response.status_code}")
                 return False
+
+        except Exception as e:
+            print(f"[WiFiLink] ❌ Send error: {e}")
+            logger.error(f"Command send error: {e}")
+            return False
 
         except Exception as e:
             print(f"[WiFiLink] ❌ Frame construction error: {e}")
