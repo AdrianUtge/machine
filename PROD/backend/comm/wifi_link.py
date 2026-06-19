@@ -223,8 +223,10 @@ class WiFiLink:
                 if len(parts) == 2:
                     return self.send_command('GOTO', table=int(parts[0]), position=float(parts[1]))
 
-        if command_str in ('START', 'STOP', 'HOME', 'HARD_RESET', 'STATUS'):
-            return self.send_command(command_str)
+        # Handle commands with or without arguments (START, START:123456, etc.)
+        cmd_base = command_str.split(':')[0]  # Get just the command part
+        if cmd_base in ('START', 'STOP', 'HOME', 'HARD_RESET', 'STATUS', 'GET_STATUS'):
+            return self.send_command(cmd_base)
 
         return False
 

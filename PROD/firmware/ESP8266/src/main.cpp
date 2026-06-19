@@ -230,10 +230,12 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
                     if (written == 0) {
                         Serial.printf("[UART1] ❌ Write failed for byte[%u]!\n", i);
                     }
+                    delay(2);  // Small delay to allow SoftwareSerial to transmit
                 }
 
                 Serial.println("[UART1] Flushing buffer...");
                 openrb_link.flush();
+                delay(5);  // Give time for buffer to clear
 
                 // Check UART1 status
                 int available = openrb_link.available();

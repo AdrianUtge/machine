@@ -35,9 +35,18 @@
 #define LINK_BAUD       19200      // Hardware UART1, matches ESP Serial1.begin()
 
 // --- Streaming statut (liaison permanente) ---
-// On émet le burst de statut tout seul à 10 Hz, sans attendre de GET_STATUS.
+// On émet le burst de statut tout seul, sans attendre de GET_STATUS.
 // L'ESP cache le dernier burst -> /api/status devient instantané (pas d'A/R série).
-#define STREAM_PERIOD_MS 100
+// Increased to 200ms to allow ESP SoftwareSerial to process frames (was causing buffer overflow)
+#define STREAM_PERIOD_MS 200
+
+// --- Binary Protocol Response Codes (Phase 3) ---
+#define RESP_ACK             0x00
+#define RESP_DONE            0x01
+#define RESP_ERROR_INVALID_CMD  0x80
+#define RESP_ERROR_INVALID_ARG  0x81
+#define RESP_ERROR_CRC       0x82
+#define RESP_ERROR_DEVICE    0x83
 
 // --- Stepper DM542T ---
 static const uint8_t PUL_PIN = 6;
@@ -97,6 +106,9 @@ static bool lastInForceWindow = false;
 
 // Handshake with ESP: true after first command received
 static bool esp_ready = false;
+
+// Flag: true during binary command processing (handlers skip text responses)
+static bool binary_mode_active = false;
 
 // Phase de contrôle par table (pour logging/debug)
 enum ForceControlPhase {
@@ -400,9 +412,66 @@ static const char* modeStr() {
     }
 }
 
+// CRC8 checksum (matches ESP/backend firmware)
+static uint8_t crc8_calc(const uint8_t* data, size_t len) {
+    uint8_t crc = 0xFF;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int j = 0; j < 8; j++) {
+            if (crc & 0x80) {
+                crc = ((crc << 1) ^ 0x07) & 0xFF;
+            } else {
+                crc = (crc << 1) & 0xFF;
+            }
+        }
+    }
+    return crc;
+}
+
+// Send binary response frame: [0x52] [RESULT_CODE] [CRC8]
+static void sendResponseBinary(uint8_t result_code) {
+    uint8_t frame[3] = { 0x52, result_code, 0x00 };
+    frame[2] = crc8_calc(frame, 2);
+    LINK.write(frame, 3);
+}
+
+// Legacy text responses (kept for debugging, but not used in Phase 3)
 static void sendAck(const String& m)  { LINK.print("ACK:");   LINK.println(m); }
 static void sendDone(const String& m) { LINK.print("DONE:");  LINK.println(m); }
 static void sendErr(const String& m)  { LINK.print("ERROR:"); LINK.println(m); }
+
+static void sendStatusBinary() {
+    // Binary STATUS frame: [0xS] [FREQ:2 LE] [POS[4]:8] [FORCE[4]:8] [CRC8]
+    // Total: 20 bytes
+    readAllForces();
+
+    uint8_t frame[20] = { 0x53 };  // Type = 'S'
+
+    // FREQ (Hz × 10, u16 LE)
+    uint16_t freq_hz10 = (uint16_t)(g_frequency * 10.0f);
+    frame[1] = (uint8_t)(freq_hz10 & 0xFF);
+    frame[2] = (uint8_t)((freq_hz10 >> 8) & 0xFF);
+
+    // POSITIONS (mm × 10, u16 LE, 4×2 bytes)
+    for (uint8_t i = 0; i < 4; i++) {
+        uint16_t pos_mm10 = (uint16_t)(dxlPositionMm(i) * 10.0f);
+        frame[3 + i*2] = (uint8_t)(pos_mm10 & 0xFF);
+        frame[4 + i*2] = (uint8_t)((pos_mm10 >> 8) & 0xFF);
+    }
+
+    // FORCES (mV, u16 LE, 4×2 bytes)
+    for (uint8_t i = 0; i < 4; i++) {
+        uint16_t force_mv = (uint16_t)g_force[i];
+        frame[11 + i*2] = (uint8_t)(force_mv & 0xFF);
+        frame[12 + i*2] = (uint8_t)((force_mv >> 8) & 0xFF);
+    }
+
+    // CRC8
+    frame[19] = crc8_calc(frame, 19);
+
+    // Send all 20 bytes
+    LINK.write(frame, 20);
+}
 
 static void sendStatus() {
     readAllForces();
@@ -438,14 +507,14 @@ static void handleStart() {
     digitalWrite(ENA_PIN, LOW);          // driver activé (actif bas)
     stepperSetFrequency(g_frequency);
     g_mode = Mode::RUNNING;
-    sendAck("START");
+    if (!binary_mode_active) sendAck("START");
 }
 
 static void handleStop() {
     stepperSetFrequency(0);              // stop pulses
     digitalWrite(ENA_PIN, HIGH);         // driver désactivé
     g_mode = Mode::IDLE;
-    sendAck("STOP");
+    if (!binary_mode_active) sendAck("STOP");
 }
 
 static void handleHome() {
@@ -454,8 +523,10 @@ static void handleHome() {
     // ÉTAPE 2 : référencer les tables si nécessaire.
     g_homed = true;
     g_mode = Mode::READY;
-    sendAck("HOME");
-    sendDone("HOME");
+    if (!binary_mode_active) {
+        sendAck("HOME");
+        sendDone("HOME");
+    }
 }
 
 static void handleHardReset() {
@@ -466,7 +537,7 @@ static void handleHardReset() {
     g_speed = 100;
     g_frequency = 0.8f;
     for (uint8_t i = 0; i < N_TABLES; i++) g_forceTarget[i] = 0;
-    sendAck("HARD_RESET");
+    if (!binary_mode_active) sendAck("HARD_RESET");
 }
 
 // SET_FORCE:<N>           -> consigne globale (les 4 cellules)
@@ -482,7 +553,7 @@ static void handleSetForce(const String& arg) {
         if (cell >= 1 && cell <= N_TABLES) g_forceTarget[cell - 1] = n;
     }
     // ÉTAPE 1 : on ne fait que mémoriser. Pas de descente autonome.
-    sendAck("SET_FORCE");
+    if (!binary_mode_active) sendAck("SET_FORCE");
 }
 
 // GOTO:<table>:<mm>
@@ -502,12 +573,18 @@ static void handleBlink(uint8_t motor_id, uint32_t duration_ms) {
 
 static void handleGoto(const String& arg) {
     int colon = arg.indexOf(':');
-    if (colon < 0) { sendErr("GOTO_FORMAT"); return; }
+    if (colon < 0) {
+        if (!binary_mode_active) sendErr("GOTO_FORMAT");
+        return;
+    }
     int table = arg.substring(0, colon).toInt();
     float mm  = arg.substring(colon + 1).toFloat();
-    if (table < 1 || table > N_TABLES) { sendErr("GOTO_TABLE"); return; }
+    if (table < 1 || table > N_TABLES) {
+        if (!binary_mode_active) sendErr("GOTO_TABLE");
+        return;
+    }
     dxlGotoMm(table - 1, mm);
-    sendAck("GOTO");
+    if (!binary_mode_active) sendAck("GOTO");
 }
 
 static void dispatch(String line) {
@@ -564,8 +641,6 @@ static void dispatch(String line) {
             return;
         }
         if (duration_ms <= 0) duration_ms = 500;
-
-        // Blink: toggle LED rapidly for ~duration_ms
         uint32_t start = millis();
         while (millis() - start < duration_ms) {
             dxl.ledOn(g_dxlIds[motor_id]);
@@ -635,26 +710,48 @@ static String g_rx;
 
 // ===== Binary Command Handler =====
 static void handleBinaryCommand(const uint8_t* frame, size_t len) {
-    if (len < 2) return;  // Need at least [TYPE][CMD_ID]
+    if (len < 2) {
+        sendResponseBinary(RESP_ERROR_INVALID_CMD);
+        return;
+    }
 
+    // Debug: log command received
+    Serial.print("[Binary] Cmd=0x");
+    Serial.print(frame[1], HEX);
+    Serial.print(" len=");
+    Serial.println(len);
+
+    binary_mode_active = true;  // Signal to handlers: send binary response, not text
     uint8_t cmd_id = frame[1];
+    bool handled = false;
 
     switch (cmd_id) {
         case 0x01:  // START
             handleStart();
+            sendResponseBinary(RESP_ACK);
+            handled = true;
             break;
         case 0x02:  // STOP
             handleStop();
+            sendResponseBinary(RESP_ACK);
+            handled = true;
             break;
         case 0x03:  // HARD_RESET
             handleHardReset();
+            sendResponseBinary(RESP_ACK);
+            handled = true;
             break;
         case 0x10:  // SET_FREQ
             if (len >= 3) {
                 float f = (float)frame[2];
-                if (f < 0 || f > F_ROTATION_MAX) return;
-                g_frequency = f;
-                if (g_mode == Mode::RUNNING) stepperSetFrequency(f);
+                if (f < 0 || f > F_ROTATION_MAX) {
+                    sendResponseBinary(RESP_ERROR_INVALID_ARG);
+                } else {
+                    g_frequency = f;
+                    if (g_mode == Mode::RUNNING) stepperSetFrequency(f);
+                    sendResponseBinary(RESP_ACK);
+                    handled = true;
+                }
             }
             break;
         case 0x20:  // GOTO
@@ -662,8 +759,13 @@ static void handleBinaryCommand(const uint8_t* frame, size_t len) {
                 uint8_t table = frame[2];
                 uint16_t pos_mm10 = frame[3] | (frame[4] << 8);
                 float pos_mm = pos_mm10 / 10.0f;
-                if (table < 1 || table > N_TABLES) return;
-                handleGoto(String(table) + ":" + String(pos_mm, 1));
+                if (table < 1 || table > N_TABLES) {
+                    sendResponseBinary(RESP_ERROR_INVALID_ARG);
+                } else {
+                    handleGoto(String(table) + ":" + String(pos_mm, 1));
+                    sendResponseBinary(RESP_ACK);
+                    handled = true;
+                }
             }
             break;
         case 0x30:  // MOTOR_BLINK
@@ -671,18 +773,26 @@ static void handleBinaryCommand(const uint8_t* frame, size_t len) {
                 uint8_t motor_id = frame[2];
                 uint16_t duration_ms = frame[3] | (frame[4] << 8);
                 handleBlink(motor_id, duration_ms);
+                sendResponseBinary(RESP_ACK);
+                handled = true;
             }
             break;
         case 0x31:  // SCAN_DXL
             dxlScan();
+            sendResponseBinary(RESP_ACK);
+            handled = true;
             break;
         case 0xF0:  // GET_STATUS
-            sendStatus();
+            sendStatusBinary();  // Send binary STATUS frame
+            sendResponseBinary(RESP_ACK);
+            handled = true;
             break;
         default:
             // Unknown command
+            sendResponseBinary(RESP_ERROR_INVALID_CMD);
             break;
     }
+    binary_mode_active = false;  // Reset flag after command processing
 }
 
 void setup() {
@@ -718,6 +828,17 @@ void loop() {
     static uint8_t bin_rx_buffer[64];
     static size_t bin_rx_pos = 0;
     static uint32_t bin_rx_last_byte_ms = 0;
+    static uint32_t last_debug_time = 0;
+
+    // Debug: log if Serial3 is receiving data
+    uint32_t now = millis();
+    if (now - last_debug_time > 5000) {
+        last_debug_time = now;
+        int avail = LINK.available();
+        if (avail > 0) Serial.print("[Serial3] ");
+        Serial.print("Bytes available: ");
+        Serial.println(avail);
+    }
 
     while (LINK.available()) {
         uint8_t byte = LINK.read();
@@ -781,15 +902,15 @@ void loop() {
     }
 
     // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
-    // BUT: only start streaming after first command received (handshake)
+    // BUT: only start streaming after ESP has booted AND first command received (handshake)
     static uint32_t lastStreamMs = 0;
-    uint32_t now = millis();
 
-    // Start streaming only after ESP has sent at least one command
-    if (esp_ready && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
-        lastStreamMs = now;
-        sendStatus();
-    }
+    // TEMPORARY: Disable STATUS streaming to fix buffer corruption issue
+    // Start streaming binary STATUS frames only after ESP has booted (3s delay) and sent at least one command
+    // if (esp_ready && now >= 3000 && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
+    //     lastStreamMs = now;
+    //     sendStatusBinary();  // Use binary protocol (Phase 3)
+    // }
 
     // Feedback LED : clignotement en RUNNING, fixe sinon.
     updateDxlLeds();

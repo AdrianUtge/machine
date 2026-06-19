@@ -571,8 +571,10 @@ def start():
     if not controller:
         raise HTTPException(status_code=400, detail="Not connected")
 
+    print("[API] START button pressed, sending to controller...")
     controller.start()
     log_action("command", "START")
+    print("[API] START sent, reading responses...")
     _read_all_responses()
 
     return {"success": True, "state": get_state_dict(controller.state)}
