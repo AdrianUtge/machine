@@ -21,8 +21,8 @@ DEPENDENCIES:
     - socket (TCP client), requests (GET /api/status), threading (lock), struct (u16 LE).
 
 BINARY PROTOCOL:
-    - Command: [0xC] [CMD_ID] [ARGS...] [CRC8]
-    - Response: [0xR] [RESULT_CODE] [DATA] [CRC8]
+    - Command: [0x43='C'] [CMD_ID] [ARGS...] [CRC8]
+    - Response: [0x52='R'] [RESULT_CODE] [DATA] [CRC8]
     - CRC8: XOR initial 0xFF, polynomial 0x07
 
 MAINTAINER NOTES:
@@ -78,7 +78,7 @@ def build_command_frame(cmd_id: int, args: bytes = b'') -> bytes:
     """
     Build a binary command frame with CRC8.
 
-    Format: [0xC] [CMD_ID] [ARGS...] [CRC8]
+    Format: [0x43='C'] [CMD_ID] [ARGS...] [CRC8]
 
     Args:
         cmd_id: Command ID (0x01-0xF0)
@@ -87,7 +87,7 @@ def build_command_frame(cmd_id: int, args: bytes = b'') -> bytes:
     Returns:
         Complete frame including CRC8 checksum
     """
-    frame_data = bytes([0xC, cmd_id]) + args
+    frame_data = bytes([0x43, cmd_id]) + args  # 0x43 = 'C'
     checksum = crc8(frame_data)
     return frame_data + bytes([checksum])
 
@@ -96,7 +96,7 @@ def parse_response_frame(frame: bytes) -> Tuple[int, bytes]:
     """
     Parse a binary response frame.
 
-    Format: [0xR] [RESULT_CODE] [DATA...] [CRC8]
+    Format: [0x52='R'] [RESULT_CODE] [DATA...] [CRC8]
 
     Args:
         frame: Raw response frame bytes
@@ -108,7 +108,7 @@ def parse_response_frame(frame: bytes) -> Tuple[int, bytes]:
     if len(frame) < 3:
         raise ValueError(f"Response frame too short: {len(frame)} bytes")
 
-    if frame[0] != 0xR:
+    if frame[0] != 0x52:  # 0x52 = 'R'
         raise ValueError(f"Invalid response frame type: {frame[0]:02x} (expected 0x52)")
 
     result_code = frame[1]
