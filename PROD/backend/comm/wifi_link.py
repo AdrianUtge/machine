@@ -115,7 +115,11 @@ class WiFiLink:
     def _on_message(self, ws, message):
         """Receive binary frame from WebSocket."""
         try:
-            frame = bytes.fromhex(message) if isinstance(message, str) else message
+            # Message is already binary (OPCODE_BINARY)
+            if isinstance(message, str):
+                frame = bytes.fromhex(message)
+            else:
+                frame = bytes(message)
             self.rx_queue.put(frame)
             print(f"[WiFiLink] RX: {frame.hex()}")
         except Exception as e:
@@ -183,9 +187,9 @@ class WiFiLink:
                 return False
 
             if frame:
-                hex_str = frame.hex()
-                print(f"[WiFiLink] TX: {hex_str}")
-                self.ws.send(hex_str, websocket.ABNF.OPCODE_TEXT)
+                print(f"[WiFiLink] TX: {frame.hex()}")
+                # Send binary frame directly (not hex string)
+                self.ws.send(frame, websocket.ABNF.OPCODE_BINARY)
                 return True
 
         except Exception as e:
