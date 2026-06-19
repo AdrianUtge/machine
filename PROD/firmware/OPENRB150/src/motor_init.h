@@ -15,6 +15,15 @@
 
 #include <Arduino.h>
 
+// Forward declarations from main.cpp
+extern uint8_t g_dxlCount;
+extern float g_forceTarget[4];
+extern float g_force[4];
+
+extern float dxlPositionMm(uint8_t table);
+extern void dxlGotoMm(uint8_t table, float mm);
+extern void readAllForces();
+
 enum InitPhase {
   INIT_IDLE = 0,
   INIT_PHASE1_DESCENT = 1,

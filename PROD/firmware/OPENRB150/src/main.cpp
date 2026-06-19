@@ -141,11 +141,11 @@ static Mode     g_mode = Mode::IDLE;
 static bool     g_homed = false;
 static int32_t  g_speed = 100;          // %
 static float    g_frequency = 0.8f;     // Hz (oscillation)
-static float    g_forceTarget[4] = { 0, 0, 0, 0 };  // consignes (ÉTAPE 2)
-static float    g_force[4] = { 0, 0, 0, 0 };        // mesures (N)
+float    g_forceTarget[4] = { 0, 0, 0, 0 };  // consignes (ÉTAPE 2) - Accessible to motor_init.cpp
+float    g_force[4] = { 0, 0, 0, 0 };        // mesures (N) - Accessible to motor_init.cpp
 
 static uint8_t  g_dxlIds[4] = { 0, 0, 0, 0 };
-static uint8_t  g_dxlCount = 0;
+uint8_t  g_dxlCount = 0;  // Accessible to motor_init.cpp
 
 // === Calibration & Limites Dynamixel ========================================
 // Position limites (mm) pour chaque table — établies lors du HOME
@@ -236,7 +236,7 @@ static float readForcemV(uint8_t cell) {
 //     return (counts - FORCE_OFFSET[cell]) * FORCE_GAIN[cell];
 // }
 
-static void readAllForces() {
+void readAllForces() {
     // Phase 1 : envoyer mV bruts
     for (uint8_t i = 0; i < N_TABLES; i++) g_force[i] = readForcemV(i);
 }
@@ -274,13 +274,13 @@ static void dxlScan() {
     Serial.println("[dxlScan] Done!");
 }
 
-static float dxlPositionMm(uint8_t table) {
+float dxlPositionMm(uint8_t table) {
     if (table >= g_dxlCount) return 0.0f;
     float pos = dxl.getPresentPosition(g_dxlIds[table]);  // unités Dynamixel
     return pos / DXL_PER_MM;
 }
 
-static void dxlGotoMm(uint8_t table, float mm) {
+void dxlGotoMm(uint8_t table, float mm) {
     if (table >= g_dxlCount) return;
     dxl.setGoalPosition(g_dxlIds[table], mm * DXL_PER_MM);
     g_positionTarget[table] = mm;  // Mémoriser cible
