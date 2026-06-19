@@ -732,12 +732,24 @@ void loop() {
         if (byte == 0x43 || (bin_rx_pos > 0 && bin_rx_pos < sizeof(bin_rx_buffer))) {
             bin_rx_buffer[bin_rx_pos++] = byte;
 
-            // Try to detect complete frame
+            // Try to detect complete frame by validating CRC
             if (bin_rx_pos >= 3 && bin_rx_pos <= 8) {
                 // Binary frame format: [TYPE:1][CMD:1][ARGS:0-5][CRC8:1]
-                // Minimum 3 bytes, maximum 8 bytes
-                // For now, assume 3-byte minimum to detect end
-                if (byte == 0xBA || byte == 0xFF) { // CRC8 is usually non-printable
+                // Validate CRC8 of current position as potential frame end
+                uint8_t calc_crc = 0xFF;
+                for (size_t i = 0; i < bin_rx_pos - 1; i++) {
+                    calc_crc ^= bin_rx_buffer[i];
+                    for (int j = 0; j < 8; j++) {
+                        if (calc_crc & 0x80) {
+                            calc_crc = ((calc_crc << 1) ^ 0x07) & 0xFF;
+                        } else {
+                            calc_crc = (calc_crc << 1) & 0xFF;
+                        }
+                    }
+                }
+
+                if (calc_crc == bin_rx_buffer[bin_rx_pos - 1]) {
+                    // Valid CRC! Frame is complete
                     snprintf(dbg, sizeof(dbg), "[Serial3] Binary frame: %u bytes", bin_rx_pos);
                     Serial.println(dbg);
                     Serial.print("[Serial3] Hex: ");
