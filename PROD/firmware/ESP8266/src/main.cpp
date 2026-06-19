@@ -26,21 +26,15 @@
 static const uint8_t PIN_LED = D4;  // GPIO2 = LED intégrée (actif bas)
 
 // ===== Serial Link to OpenRB-150 =====
-// Try UART1 first (RX=GPIO13/D7, TX=GPIO15/D8 @ 19200)
-// UART1 is hardware serial, much faster than SoftwareSerial @ 9600
-// Fallback: SoftwareSerial @ 19200 (still 2× faster than old 9600)
+// ESP8266 Serial1 is TX-only (GPIO2), cannot be used bidirectionally.
+// Must use SoftwareSerial on custom pins:
+//   - ESP D5 (GPIO14) RX ← OpenRB D14 TX
+//   - ESP D6 (GPIO12) TX → OpenRB D13 RX
 //
-// NOTE: On NodeMCU, UART1 RX pin is special (GPIO13) and TX is GPIO15.
-// We use Serial1 (UART1) if available, otherwise fall back to SoftwareSerial.
-//
-#define OPENRB_BAUD 19200  // Upgraded from 9600 (UART1 can handle this)
+#define OPENRB_BAUD 19200
 
-// Try to use hardware UART1 (Serial1) for speed; fall back to SoftwareSerial
-// UART1 TX = GPIO15 (D8), RX = GPIO13 (D7)
-static HardwareSerial* openrb_link = &Serial1;  // UART1 (fast, hardware)
-
-// Fallback: SoftwareSerial if UART1 has issues
-// SoftwareSerial openrb_fallback(14 /*RX=GPIO14*/, 12 /*TX=GPIO12*/);
+// SoftwareSerial to OpenRB (RX=GPIO14/D5, TX=GPIO12/D6)
+static SoftwareSerial openrb_link(14, 12);  // RX=D5, TX=D6 @ 19200
 
 // ===== WebSocket Server =====
 ESP8266WebServer server(HTTP_PORT);
@@ -348,21 +342,16 @@ void setup() {
     Serial.printf("[SETUP] AP started: %s\n", WIFI_SSID);
     Serial.printf("[SETUP] IP: %s\n", WiFi.softAPIP().toString().c_str());
 
-    // Initialize UART1 for OpenRB link (pins RX=GPIO13, TX=GPIO15 are fixed on ESP8266)
-    Serial.println("[SETUP] Initializing UART1 @ 19200 baud...");
-    Serial1.begin(OPENRB_BAUD);  // UART1 on ESP8266 uses fixed pins RX=GPIO13, TX=GPIO15
+    // Initialize SoftwareSerial for OpenRB link
+    // (ESP8266 Serial1 is TX-only, cannot receive bidirectionally)
+    Serial.println("[SETUP] Initializing SoftwareSerial to OpenRB @ 19200 baud...");
+    openrb_link.begin(OPENRB_BAUD);
     delay(100);
 
-    // Verify UART1 initialization
-    openrb_link = &Serial1;
-    if (openrb_link == nullptr) {
-        Serial.println("[SETUP] ❌ FATAL: Failed to initialize UART1 (Serial1 is NULL)!");
-    } else {
-        Serial.println("[SETUP] ✓ UART1 initialized successfully");
-        Serial.printf("[SETUP]   UART1 object: %p\n", (void*)openrb_link);
-        Serial.printf("[SETUP]   Baud rate: %d\n", OPENRB_BAUD);
-        Serial.println("[SETUP]   Pins: RX=GPIO13 (D7), TX=GPIO15 (D8) [fixed on ESP8266]");
-    }
+    Serial.println("[SETUP] ✓ SoftwareSerial initialized successfully");
+    Serial.println("[SETUP]   RX=GPIO14 (D5) ← OpenRB TX (D14)");
+    Serial.println("[SETUP]   TX=GPIO12 (D6) → OpenRB RX (D13)");
+    Serial.printf("[SETUP]   Baud rate: %d\n", OPENRB_BAUD);
 
     // WebSocket server
     webSocket.begin();
