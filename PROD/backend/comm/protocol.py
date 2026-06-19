@@ -206,3 +206,19 @@ def parse_response(line: str, state: MachineState) -> None:
                 )
         except (ValueError, IndexError) as e:
             print(f"[INIT_STATUS] Failed to parse: {value} ({e})")
+    elif key == "CALIB":
+        # Parse calibration response: "CALIB:1:0.0:94.2" -> table 1, min=0.0, max=94.2
+        try:
+            parts = value.split(":")
+            if len(parts) >= 3:
+                table_num = int(parts[0].strip())
+                min_mm = float(parts[1].strip())
+                max_mm = float(parts[2].strip())
+                # Store in position_limits dict
+                table_key = f"table_{table_num}"
+                if table_key in state.position_limits:
+                    state.position_limits[table_key]["min"] = min_mm
+                    state.position_limits[table_key]["max"] = max_mm
+                    print(f"[CALIB] Table {table_num}: limits=[{min_mm:.1f}, {max_mm:.1f}] mm")
+        except (ValueError, IndexError) as e:
+            print(f"[CALIB] Failed to parse: {value} ({e})")

@@ -127,6 +127,23 @@ class MachineController:
         return True
 
     def goto(self, table: int, position: float) -> None:
+        # Validation: machine state (READY or IDLE only)
+        if self.state.machine_status not in ("READY", "IDLE"):
+            print(f"[goto] ❌ Machine état={self.state.machine_status}, rejette GOTO (nécessite READY/IDLE)")
+            return
+
+        # Validation: position limits
+        table_key = f"table_{table}"
+        if table_key in self.state.position_limits:
+            limits = self.state.position_limits[table_key]
+            if position < limits["min"] or position > limits["max"]:
+                print(f"[goto] ❌ Table {table} position={position} hors limites [{limits['min']}, {limits['max']}]")
+                return
+
+        # Memorize target
+        if table >= 1 and table <= 4:
+            self.state.position_targets[table - 1] = position
+
         self._send(cmd_goto(table, position))
 
     def torque(self, on: bool) -> None:

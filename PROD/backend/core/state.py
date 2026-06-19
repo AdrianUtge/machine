@@ -53,8 +53,14 @@ class MachineState:
     # Sert à calculer le runtime de façon absolue (pas un compteur remis à 0).
     cycle_start: int | None = None
 
-    # Position of 4 tables
+    # Position of 4 tables (mm)
     positions: list[float] = None
+    # Position targets for 4 tables (mm) — memorized after GOTO command
+    position_targets: list[float] = None
+    # Position limits [min, max] for each table (calibrated during HOME)
+    position_limits: dict = None  # {"table_1": {"min": 0.0, "max": 96.0}, ...}
+    # Is each table moving (for frontend UI feedback)
+    is_moving: list[bool] = None
     # 4 force sensors
     sensors: list[float] = None
     # Motor current
@@ -74,6 +80,17 @@ class MachineState:
     def __post_init__(self):
         if self.positions is None:
             self.positions = [0.0, 0.0, 0.0, 0.0]
+        if self.position_targets is None:
+            self.position_targets = [0.0, 0.0, 0.0, 0.0]
+        if self.position_limits is None:
+            self.position_limits = {
+                "table_1": {"min": 0.0, "max": 96.0},
+                "table_2": {"min": 0.0, "max": 96.0},
+                "table_3": {"min": 0.0, "max": 96.0},
+                "table_4": {"min": 0.0, "max": 96.0},
+            }
+        if self.is_moving is None:
+            self.is_moving = [False, False, False, False]
         if self.sensors is None:
             self.sensors = [0.0, 0.0, 0.0, 0.0]
         if self.force_targets is None:
