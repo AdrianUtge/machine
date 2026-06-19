@@ -290,8 +290,8 @@ export default function App() {
         <div className="xl:col-span-1">
           {machineState ? (
             <PositionsAndSensors
-              positions={liveStatus.positions ?? machineState?.positions || [0, 0, 0, 0]}
-              sensors={liveStatus.forces ?? machineState?.sensors || [0, 0, 0, 0]}
+              positions={(liveStatus.positions ?? machineState?.positions) || [0, 0, 0, 0]}
+              sensors={(liveStatus.forces ?? machineState?.sensors) || [0, 0, 0, 0]}
               isConnected={isConnected}
               machineStatus={machineState?.machine_status}
               forceTargets={machineState?.force_targets}
