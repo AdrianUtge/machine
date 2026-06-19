@@ -649,14 +649,14 @@ void loop() {
     static uint8_t bin_rx_buffer[64];
     static size_t bin_rx_pos = 0;
     static uint32_t bin_rx_last_byte_ms = 0;
+    char dbg[32];  // Debug buffer for snprintf
 
     while (LINK.available()) {
         uint8_t byte = LINK.read();
         bin_rx_last_byte_ms = millis();
 
         // Debug: print incoming bytes
-        char dbg[32];
-        snprintf(dbg, sizeof(dbg), "[Serial3] RX: 0x%02X", byte);
+        snprintf(dbg, sizeof(dbg), "[Serial3] RX: 0x%02X", (int)byte);
         Serial.println(dbg);
 
         // Check if it's a binary frame (starts with 0x43 = 'C' for command)
