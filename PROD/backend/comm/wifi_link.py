@@ -244,12 +244,12 @@ class WiFiLink:
                 forces = []
                 for i in range(4):
                     force_mv = frame[11 + i*2] | (frame[12 + i*2] << 8)
-                    forces.append(force_mv / 1000.0)
+                    forces.append(float(force_mv))  # Keep as mV (already in mV from firmware)
 
                 return {
                     'frequency': freq_hz10 / 10.0,
                     'positions': positions,
-                    'sensors': forces,
+                    'sensors': forces,  # Raw mV from OpenRB
                     'status': 'ok',
                 }
         except queue.Empty:
