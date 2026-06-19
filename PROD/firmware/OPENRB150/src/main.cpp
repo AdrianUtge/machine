@@ -655,7 +655,9 @@ void loop() {
         bin_rx_last_byte_ms = millis();
 
         // Debug: print incoming bytes
-        Serial.printf("[Serial3] RX: 0x%02X\n", byte);
+        char dbg[32];
+        snprintf(dbg, sizeof(dbg), "[Serial3] RX: 0x%02X", byte);
+        Serial.println(dbg);
 
         // Check if it's a binary frame (starts with 0x43 = 'C' for command)
         if (byte == 0x43 || (bin_rx_pos > 0 && bin_rx_pos < sizeof(bin_rx_buffer))) {
@@ -667,10 +669,12 @@ void loop() {
                 // Minimum 3 bytes, maximum 8 bytes
                 // For now, assume 3-byte minimum to detect end
                 if (byte == 0xBA || byte == 0xFF) { // CRC8 is usually non-printable
-                    Serial.printf("[Serial3] Binary frame detected: %u bytes\n", bin_rx_pos);
+                    snprintf(dbg, sizeof(dbg), "[Serial3] Binary frame: %u bytes", bin_rx_pos);
+                    Serial.println(dbg);
                     Serial.print("[Serial3] Hex: ");
                     for (size_t i = 0; i < bin_rx_pos; i++) {
-                        Serial.printf("%02X ", bin_rx_buffer[i]);
+                        snprintf(dbg, sizeof(dbg), "%02X ", bin_rx_buffer[i]);
+                        Serial.print(dbg);
                     }
                     Serial.println();
                     // TODO: dispatch binary frame
@@ -680,7 +684,7 @@ void loop() {
 
             // Safety: if buffer gets too large, reset
             if (bin_rx_pos >= sizeof(bin_rx_buffer)) {
-                Serial.printf("[Serial3] ⚠️ Buffer overflow, resetting\n");
+                Serial.println("[Serial3] Buffer overflow, resetting");
                 bin_rx_pos = 0;
             }
         } else {
@@ -696,7 +700,8 @@ void loop() {
 
     // Timeout: if no bytes for 100ms, discard incomplete binary frame
     if (bin_rx_pos > 0 && (millis() - bin_rx_last_byte_ms > 100)) {
-        Serial.printf("[Serial3] ⚠️ Timeout! Incomplete binary frame discarded (%u bytes)\n", bin_rx_pos);
+        snprintf(dbg, sizeof(dbg), "[Serial3] Timeout! Frame discarded (%u bytes)", bin_rx_pos);
+        Serial.println(dbg);
         bin_rx_pos = 0;
     }
 
