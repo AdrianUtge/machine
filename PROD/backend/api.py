@@ -231,10 +231,18 @@ def log_action(type_: str, message: str) -> None:
 def background_reader():
     """Thread that continuously reads from serial port and logs everything."""
     global controller, is_reading
+    last_init_status_poll = 0.0
 
     while is_reading:
         try:
             if controller and controller.link.ser:
+                # If init is running, poll INIT_STATUS every 200ms to keep status fresh
+                now = time.monotonic()
+                if controller.state.init_status.running and (now - last_init_status_poll) > 0.2:
+                    from comm.protocol import cmd_init_status
+                    controller._send(cmd_init_status())
+                    last_init_status_poll = now
+
                 line = controller.read_once()
                 if line:
                     log_action("response", line)
