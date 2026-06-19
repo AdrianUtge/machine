@@ -102,7 +102,6 @@ static float g_forcePeakCycle[4] = { 0, 0, 0, 0 };  // Force max durant fenêtre
 static uint16_t g_forcePeakStepCountCycle = 0;      // g_stepCount du peak
 
 // État de la boucle fermée
-static uint32_t lastForceLoopMs = 0;
 static bool lastInForceWindow = false;
 
 // Handshake with ESP: true after first command received
@@ -230,12 +229,12 @@ static float readForcemV(uint8_t cell) {
 }
 
 // Phase 2 : sera utilisé pour la boucle fermée locale (après réception calibration du backend)
-static float readForceN(uint8_t cell) {
-    uint32_t acc = 0;
-    for (uint8_t i = 0; i < FORCE_BURST; i++) acc += analogRead(FORCE_PINS[cell]);
-    float counts = (float)acc / FORCE_BURST;
-    return (counts - FORCE_OFFSET[cell]) * FORCE_GAIN[cell];
-}
+// static float readForceN(uint8_t cell) {
+//     uint32_t acc = 0;
+//     for (uint8_t i = 0; i < FORCE_BURST; i++) acc += analogRead(FORCE_PINS[cell]);
+//     float counts = (float)acc / FORCE_BURST;
+//     return (counts - FORCE_OFFSET[cell]) * FORCE_GAIN[cell];
+// }
 
 static void readAllForces() {
     // Phase 1 : envoyer mV bruts
@@ -287,10 +286,10 @@ static void dxlGotoMm(uint8_t table, float mm) {
     g_positionTarget[table] = mm;  // Mémoriser cible
 }
 
-// Lire le couple/charge du moteur (0–1023 unités Dynamixel)
-static float dxlGetLoadPercent(uint8_t table) {
+// Lire le courant du moteur (détection obstacle/fin de course)
+static float dxlGetCurrent(uint8_t table) {
     if (table >= g_dxlCount) return 0.0f;
-    return (float)dxl.getPresentLoad(g_dxlIds[table]);
+    return (float)dxl.getPresentCurrent(g_dxlIds[table]);
 }
 
 // Calibration d'une table : remontée progressive, détection fin de course par torque
@@ -311,13 +310,12 @@ static bool calibrateTable(uint8_t table, uint16_t timeout_ms = 30000) {
     // Remontée progressive vers MAX
     dxlGotoMm(table, MAX_GOTO_MM);
 
-    // Polling du torque jusqu'à limite ou timeout
-    float load_max = 0.0f;
+    // Polling du courant jusqu'à limite ou timeout
     float calib_position = 0.0f;
 
     while (millis() - start_ms < timeout_ms) {
         float current_pos = dxlPositionMm(table);
-        float current_load = dxlGetLoadPercent(table);
+        float current_load = dxlGetCurrent(table);
 
         // Serial.print("[calibrate] T"); Serial.print(table);
         // Serial.print(" pos="); Serial.print(current_pos);
@@ -1119,10 +1117,9 @@ void loop() {
 
     // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
     // BUT: only start streaming after ESP has booted AND first command received (handshake)
-    static uint32_t lastStreamMs = 0;
-
     // TEMPORARY: Disable STATUS streaming to fix buffer corruption issue
     // Start streaming binary STATUS frames only after ESP has booted (3s delay) and sent at least one command
+    // static uint32_t lastStreamMs = 0;
     // if (esp_ready && now >= 3000 && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
     //     lastStreamMs = now;
     //     sendStatusBinary();  // Use binary protocol (Phase 3)
