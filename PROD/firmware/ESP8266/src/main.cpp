@@ -211,7 +211,7 @@ static void handleStatus() {
     server.sendHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
 
     // Build JSON response from cached STATUS frame (if available)
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
     doc["status"] = "ok";
     doc["uptime_ms"] = millis();
     doc["rssi"] = WiFi.RSSI();
@@ -225,14 +225,14 @@ static void handleStatus() {
         float freq_hz = freq_hz10 / 10.0;
         doc["frequency"] = freq_hz;
 
-        JsonArray pos_arr = doc.createNestedArray("positions");
+        JsonArray pos_arr = doc["positions"].to<JsonArray>();
         for (int i = 0; i < 4; i++) {
             uint16_t pos_mm10 = cached_status_frame[3 + i*2] |
                                 (cached_status_frame[4 + i*2] << 8);
             pos_arr.add(pos_mm10 / 10.0);
         }
 
-        JsonArray force_arr = doc.createNestedArray("forces");
+        JsonArray force_arr = doc["forces"].to<JsonArray>();
         for (int i = 0; i < 4; i++) {
             uint16_t force_mv = cached_status_frame[11 + i*2] |
                                 (cached_status_frame[12 + i*2] << 8);
@@ -282,9 +282,9 @@ void setup() {
     Serial.printf("[SETUP] AP started: %s\n", WIFI_SSID);
     Serial.printf("[SETUP] IP: %s\n", WiFi.softAPIP().toString().c_str());
 
-    // Initialize UART1 for OpenRB link
+    // Initialize UART1 for OpenRB link (pins RX=GPIO13, TX=GPIO15 are fixed on ESP8266)
     Serial.println("[SETUP] Initializing UART1 @ 19200 baud...");
-    Serial1.begin(OPENRB_BAUD, SERIAL_8N1, 13, 15);  // RX=GPIO13, TX=GPIO15
+    Serial1.begin(OPENRB_BAUD);  // UART1 on ESP8266 uses fixed pins RX=GPIO13, TX=GPIO15
     delay(100);
     Serial.println("[SETUP] UART1 ready");
 
