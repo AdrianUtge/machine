@@ -351,6 +351,15 @@ void setup() {
     webSocket.onEvent(webSocketEvent);
     Serial.println("[SETUP] WebSocket server started on :8080/ws");
 
+    // Handshake with OpenRB: send GET_STATUS to signal we're ready
+    delay(500);  // Wait for OpenRB to be listening
+    uint8_t get_status_cmd[] = {0x43, 0xF0};  // [CMD_TYPE][GET_STATUS_ID]
+    uint8_t crc = crc8(get_status_cmd, 2);
+    uint8_t get_status_frame[] = {0x43, 0xF0, crc};
+    openrb_link.write(get_status_frame, 3);
+    openrb_link.flush();
+    Serial.println("[SETUP] Handshake sent to OpenRB (GET_STATUS)");
+
     // HTTP server
     server.on("/api/status", HTTP_GET, handleStatus);
     server.on("/api/status", HTTP_OPTIONS, handleOptions);

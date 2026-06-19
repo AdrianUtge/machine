@@ -95,6 +95,9 @@ static uint16_t g_forcePeakStepCountCycle = 0;      // g_stepCount du peak
 static uint32_t lastForceLoopMs = 0;
 static bool lastInForceWindow = false;
 
+// Handshake with ESP: true after first command received
+static bool esp_ready = false;
+
 // Phase de contrôle par table (pour logging/debug)
 enum ForceControlPhase {
   PHASE_IDLE = 0,
@@ -677,6 +680,11 @@ void loop() {
                         Serial.print(dbg);
                     }
                     Serial.println();
+                    // Mark ESP as ready (handshake: ESP sent first command)
+                    if (!esp_ready) {
+                        esp_ready = true;
+                        Serial.println("[Serial3] ✓ ESP ready! Starting telemetry stream");
+                    }
                     // TODO: dispatch binary frame
                     bin_rx_pos = 0;
                 }
@@ -706,17 +714,12 @@ void loop() {
     }
 
     // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
-    // BUT: delay streaming for 3 seconds at startup to avoid flooding SoftwareSerial
+    // BUT: only start streaming after first command received (handshake)
     static uint32_t lastStreamMs = 0;
-    static bool startup_complete = false;
     uint32_t now = millis();
 
-    if (!startup_complete && now > 3000) {
-        startup_complete = true;
-        lastStreamMs = now;  // Reset timer after startup delay
-    }
-
-    if (startup_complete && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
+    // Start streaming only after ESP has sent at least one command
+    if (esp_ready && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
         lastStreamMs = now;
         sendStatus();
     }
