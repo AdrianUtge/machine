@@ -486,6 +486,20 @@ static void handleSetForce(const String& arg) {
 }
 
 // GOTO:<table>:<mm>
+static void handleBlink(uint8_t motor_id, uint32_t duration_ms) {
+    if (motor_id >= g_dxlCount) return;
+    if (duration_ms <= 0) duration_ms = 500;
+
+    uint32_t start = millis();
+    while (millis() - start < duration_ms) {
+        dxl.ledOn(g_dxlIds[motor_id]);
+        delay(100);
+        dxl.ledOff(g_dxlIds[motor_id]);
+        delay(100);
+    }
+    dxl.ledOff(g_dxlIds[motor_id]);
+}
+
 static void handleGoto(const String& arg) {
     int colon = arg.indexOf(':');
     if (colon < 0) { sendErr("GOTO_FORMAT"); return; }
@@ -619,6 +633,58 @@ static void dispatch(String line) {
 
 static String g_rx;
 
+// ===== Binary Command Handler =====
+static void handleBinaryCommand(const uint8_t* frame, size_t len) {
+    if (len < 2) return;  // Need at least [TYPE][CMD_ID]
+
+    uint8_t cmd_id = frame[1];
+
+    switch (cmd_id) {
+        case 0x01:  // START
+            handleStart();
+            break;
+        case 0x02:  // STOP
+            handleStop();
+            break;
+        case 0x03:  // HARD_RESET
+            handleHardReset();
+            break;
+        case 0x10:  // SET_FREQ
+            if (len >= 3) {
+                float f = (float)frame[2];
+                if (f < 0 || f > F_ROTATION_MAX) return;
+                g_frequency = f;
+                if (g_mode == Mode::RUNNING) stepperSetFrequency(f);
+            }
+            break;
+        case 0x20:  // GOTO
+            if (len >= 5) {
+                uint8_t table = frame[2];
+                uint16_t pos_mm10 = frame[3] | (frame[4] << 8);
+                float pos_mm = pos_mm10 / 10.0f;
+                if (table < 1 || table > N_TABLES) return;
+                handleGoto(String(table) + ":" + String(pos_mm, 1));
+            }
+            break;
+        case 0x30:  // MOTOR_BLINK
+            if (len >= 5) {
+                uint8_t motor_id = frame[2];
+                uint16_t duration_ms = frame[3] | (frame[4] << 8);
+                handleBlink(motor_id, duration_ms);
+            }
+            break;
+        case 0x31:  // SCAN_DXL
+            dxlScan();
+            break;
+        case 0xF0:  // GET_STATUS
+            sendStatus();
+            break;
+        default:
+            // Unknown command
+            break;
+    }
+}
+
 void setup() {
     pinMode(PUL_PIN, OUTPUT);
     pinMode(DIR_PIN, OUTPUT);
@@ -680,12 +746,14 @@ void loop() {
                         Serial.print(dbg);
                     }
                     Serial.println();
+                    // Dispatch binary command
+                    handleBinaryCommand(bin_rx_buffer, bin_rx_pos);
+
                     // Mark ESP as ready (handshake: ESP sent first command)
                     if (!esp_ready) {
                         esp_ready = true;
                         Serial.println("[Serial3] ✓ ESP ready! Starting telemetry stream");
                     }
-                    // TODO: dispatch binary frame
                     bin_rx_pos = 0;
                 }
             }
