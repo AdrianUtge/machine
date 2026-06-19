@@ -154,3 +154,14 @@ def parse_response(line: str, state: MachineState) -> None:
         state.slave_status = value
     elif key == "STATE":
         state.machine_status = value
+    elif key == "DXL_SCAN":
+        # Parse: "DXL_SCAN:4,1,2,3,4" -> 4 motors with IDs [1,2,3,4]
+        try:
+            parts = value.split(",")
+            count = int(parts[0])
+            ids = [int(p.strip()) for p in parts[1:count+1]] if len(parts) > 1 else []
+            print(f"[DXL_SCAN] Found {count} motor(s): IDs {ids}")
+            if count < 4:
+                print(f"[DXL_SCAN] ⚠️  WARNING: Expected 4 motors, found only {count}")
+        except (ValueError, IndexError):
+            print(f"[DXL_SCAN] ❌ Failed to parse: {value}")

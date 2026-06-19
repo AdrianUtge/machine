@@ -268,6 +268,7 @@ String buildOpenRbLine(JsonDocument& doc, const String& cmd) {
         return String(buf);
     }
     if (cmd == "STATUS")    return String("GET_STATUS");
+    if (cmd == "SCAN_DXL")  return String("SCAN_DXL");
     // START / STOP / HOME / HARD_RESET (et fallback) : commande telle quelle
     return cmd;
 }
@@ -349,7 +350,7 @@ void handleCommand() {
     const char* validCommands[] = {
         "START", "STOP", "HOME", "HARD_RESET",
         "FREQUENCY", "SPEED", "FORCE", "GOTO", "PRESET", "MANUAL", "STATUS",
-        "TORQUE_ON", "TORQUE_OFF", "MOTOR_BLINK", "SET_RESISTANCE"
+        "TORQUE_ON", "TORQUE_OFF", "MOTOR_BLINK", "SET_RESISTANCE", "SCAN_DXL"
     };
     const int validCommandsCount = sizeof(validCommands) / sizeof(validCommands[0]);
 

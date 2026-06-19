@@ -301,7 +301,7 @@ class WiFiLink:
 
         # 2) Direct REST command names (no parameter)
         rest_commands = {'START', 'STOP', 'HOME', 'HARD_RESET', 'STATUS',
-                         'TORQUE_ON', 'TORQUE_OFF'}
+                         'TORQUE_ON', 'TORQUE_OFF', 'SCAN_DXL'}
         if upper in rest_commands:
             return self.send_command(upper)
         if upper == 'GET_STATUS':
