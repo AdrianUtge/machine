@@ -1,488 +1,255 @@
 """
-===============================================================================
-FILE: comm/wifi_link.py
-ROLE:
-    Lien de communication backend <-> ESP8266 via binary TCP frames
-    (Phase D: haute performance, <100ms latency).
+WiFiLink: WebSocket-based binary protocol gateway to ESP8266 (Phase 3)
 
-ARCHITECTURE:
-    MachineController -> WiFiLink --TCP port 9000--> ESP8266 (192.168.4.1:9000) --série--> OpenRB-150
-    WiFiLink --HTTP GET--> ESP8266:8080/api/status (phase C: STATUS frame cache JSON)
+Direct binary frame streaming via WebSocket:
+- Command: [0x43][CMD_ID][ARGS...][CRC8] → ESP → OpenRB
+- Status: [0x53][FREQ:2][POS:8][FORCE:8][CRC8] ← OpenRB ← ESP (streaming)
+- <100ms latency, 3–20 byte frames
 
-RESPONSIBILITIES:
-    - send_frame(frame: bytes): envoie un frame binaire via TCP port 9000, attend
-      réponse (ACK/ERROR), 100ms timeout, fire-and-forget.
-    - send_command(): traduit commandes REST en frames binaires, appelle send_frame().
-    - send_line(): garde compatibilité, parse colon-delimited (SET_FREQ:50) en frame.
-    - get_status(): lit cache HTTP /api/status (ESP retourne STATUS frame en JSON).
-    - Sérialise accès TCP via _http_lock (une frame à la fois).
-
-DEPENDENCIES:
-    - socket (TCP client), requests (GET /api/status), threading (lock), struct (u16 LE).
-
-BINARY PROTOCOL:
-    - Command: [0x43='C'] [CMD_ID] [ARGS...] [CRC8]
-    - Response: [0x52='R'] [RESULT_CODE] [DATA] [CRC8]
-    - CRC8: XOR initial 0xFF, polynomial 0x07
-
-MAINTAINER NOTES:
-    - Timeout 100ms pour TCP (court, mais local WiFi)
-    - Pas de retry sur timeout : let caller handle (plus simple, déterministe)
-    - get_status() reste HTTP (pas binaire : STATUS frame est trop volumineux pour du parsage ici)
-    - read_line() deprecated (réponses ne sont pas bufferisées, sauf compatibilité)
-===============================================================================
+Protocol spec: PROD/docs/17_BINARY_PROTOCOL.md
 """
 
-import socket
 import struct
-import requests
-import json
 import logging
 import threading
-from typing import Optional, Dict, Any, Tuple
+import queue
+import time
+from typing import Optional, Dict, Any
+
+try:
+    import websocket
+except ImportError:
+    websocket = None
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# CRC8 Checksum (Binary Protocol)
-# ============================================================================
-
 def crc8(data: bytes) -> int:
-    """
-    Calculate CRC8 checksum per 17_BINARY_PROTOCOL.md.
-
-    Algorithm:
-    - Initial: crc = 0xFF
-    - For each byte: crc ^= byte, then shift 8 times with polynomial 0x07
-
-    Args:
-        data: bytes to checksum
-
-    Returns:
-        CRC8 byte (0-255)
-    """
+    """CRC8 checksum (matches OpenRB firmware)."""
     crc = 0xFF
     for byte in data:
         crc ^= byte
         for _ in range(8):
             if crc & 0x80:
-                crc = (crc << 1) ^ 0x07
+                crc = ((crc << 1) ^ 0x07) & 0xFF
             else:
-                crc = (crc << 1)
-            crc &= 0xFF
+                crc = (crc << 1) & 0xFF
     return crc
 
 
 def build_command_frame(cmd_id: int, args: bytes = b'') -> bytes:
-    """
-    Build a binary command frame with CRC8.
-
-    Format: [0x43='C'] [CMD_ID] [ARGS...] [CRC8]
-
-    Args:
-        cmd_id: Command ID (0x01-0xF0)
-        args: Optional argument bytes (0-6 bytes)
-
-    Returns:
-        Complete frame including CRC8 checksum
-    """
-    frame_data = bytes([0x43, cmd_id]) + args  # 0x43 = 'C'
-    checksum = crc8(frame_data)
-    return frame_data + bytes([checksum])
-
-
-def parse_response_frame(frame: bytes) -> Tuple[int, bytes]:
-    """
-    Parse a binary response frame.
-
-    Format: [0x52='R'] [RESULT_CODE] [DATA...] [CRC8]
-
-    Args:
-        frame: Raw response frame bytes
-
-    Returns:
-        Tuple of (result_code, data_bytes)
-        Raises ValueError if frame invalid or CRC mismatch
-    """
-    if len(frame) < 3:
-        raise ValueError(f"Response frame too short: {len(frame)} bytes")
-
-    if frame[0] != 0x52:  # 0x52 = 'R'
-        raise ValueError(f"Invalid response frame type: {frame[0]:02x} (expected 0x52)")
-
-    result_code = frame[1]
-    data = frame[2:-1] if len(frame) > 3 else b''
-    checksum = frame[-1]
-
-    # Verify CRC8
-    frame_without_crc = frame[:-1]
-    expected_crc = crc8(frame_without_crc)
-    if expected_crc != checksum:
-        raise ValueError(f"CRC mismatch: got {checksum:02x}, expected {expected_crc:02x}")
-
-    return result_code, data
+    """Build binary command frame: [0x43][CMD_ID][ARGS...][CRC8]"""
+    frame = bytes([0x43, cmd_id]) + args  # 0x43 = 'C'
+    checksum = crc8(frame)
+    return frame + bytes([checksum])
 
 
 class WiFiLink:
-    """Binary TCP + HTTP communication link to ESP8266 controller (Phase D)."""
-
-    # TCP binary frame protocol
-    TCP_PORT = 9000  # Raw binary TCP server port
-    TCP_TIMEOUT = 0.1  # 100ms timeout per send_frame() call
+    """WebSocket binary gateway to ESP8266."""
 
     def __init__(self, ip: str, http_port: int = 8080, auth_token: str = "", timeout: float = 2.0):
-        """
-        Initialize WiFi link.
-
-        Args:
-            ip: ESP8266 IP address
-            http_port: ESP8266 HTTP server port (for /api/status only)
-            auth_token: Bearer token for authentication
-            timeout: HTTP timeout in seconds (get_status)
-        """
         self.ip = ip
         self.http_port = http_port
         self.auth_token = auth_token
         self.timeout = timeout
-        self.base_url = f"http://{ip}:{http_port}"
+        self.ws_url = f"ws://{ip}:8080/ws"
         self.connected = False
-        # Sérialisation des accès TCP+HTTP : une opération à la fois.
-        # Évite les race conditions sur la connexion.
-        self._http_lock = threading.Lock()
-        # Session réutilisée (keep-alive) : pour GET /api/status seulement.
-        self._session = requests.Session()
-
-    @property
-    def headers(self) -> Dict[str, str]:
-        """Get headers with authentication."""
-        return {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.auth_token}"
-        }
+        self.ws = None
+        self.rx_queue = queue.Queue()
+        self.rx_thread = None
+        self.stop_event = threading.Event()
 
     def connect(self) -> bool:
-        """Test connection to ESP8266 via HTTP GET /api/status (not TCP)."""
-        url = f"http://{self.ip}:{self.http_port}/api/status"
-        print(f"[WiFiLink] Testing HTTP connection to: {url}")
+        """Connect to ESP8266 via WebSocket."""
+        if websocket is None:
+            logger.error("websocket library not installed (pip install websocket-client)")
+            return False
+
+        print(f"[WiFiLink] Connecting to WebSocket: {self.ws_url}")
 
         try:
-            with self._http_lock:
-                response = requests.get(
-                    url,
-                    headers=self.headers,
-                    timeout=self.timeout
-                )
+            self.ws = websocket.WebSocketApp(
+                self.ws_url,
+                on_message=self._on_message,
+                on_error=self._on_error,
+                on_close=self._on_close,
+            )
+            self.ws.on_open = self._on_open
 
-            self.connected = (response.status_code == 200)
-            if self.connected:
-                print(f"[WiFiLink] ✅ Connected via HTTP")
-                logger.info(f"Connected to ESP8266 at {self.ip}:{self.http_port}")
-            else:
-                print(f"[WiFiLink] ❌ HTTP error {response.status_code}")
-                logger.error(f"ESP8266 returned status {response.status_code}")
-            return self.connected
+            # Start WebSocket in background thread
+            self.stop_event.clear()
+            self.rx_thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+            self.rx_thread.start()
+
+            # Wait for connection
+            for _ in range(50):  # 5 second timeout
+                if self.connected:
+                    print(f"[WiFiLink] ✅ WebSocket connected")
+                    return True
+                time.sleep(0.1)
+
+            print(f"[WiFiLink] ❌ WebSocket timeout")
+            return False
 
         except Exception as e:
-            print(f"[WiFiLink] ❌ Connection test failed: {e}")
-            logger.error(f"Failed to connect to ESP8266: {e}")
+            print(f"[WiFiLink] ❌ Connection failed: {e}")
+            logger.error(f"WebSocket connection failed: {e}")
             self.connected = False
             return False
 
     def disconnect(self) -> bool:
         """Disconnect from ESP8266."""
         self.connected = False
-        logger.info("Disconnected from ESP8266")
+        self.stop_event.set()
+        if self.ws:
+            self.ws.close()
+        if self.rx_thread:
+            self.rx_thread.join(timeout=1.0)
+        print(f"[WiFiLink] Disconnected")
         return True
 
-    def send_frame(self, frame: bytes) -> bool:
-        """
-        Send binary frame via HTTP POST (WebSocket fallback for now).
+    def _on_open(self, ws):
+        """WebSocket connected."""
+        self.connected = True
 
-        Phase 3 design: WebSocket for real-time binary, but HTTP for compatibility.
+    def _on_message(self, ws, message):
+        """Receive binary frame from WebSocket."""
+        try:
+            frame = bytes.fromhex(message) if isinstance(message, str) else message
+            self.rx_queue.put(frame)
+            print(f"[WiFiLink] RX: {frame.hex()}")
+        except Exception as e:
+            logger.error(f"Frame decode error: {e}")
 
-        Args:
-            frame: Binary frame to send (should include CRC8)
+    def _on_error(self, ws, error):
+        """WebSocket error."""
+        print(f"[WiFiLink] ❌ WebSocket error: {error}")
+        logger.error(f"WebSocket error: {error}")
+        self.connected = False
 
-        Returns:
-            True if sent successfully, False on timeout/error
-        """
-        if not self.connected:
-            logger.error("Not connected to ESP8266")
-            return False
-
-        with self._http_lock:
-            try:
-                # For now, use HTTP POST with base64-encoded binary
-                # (real impl would use WebSocket, but this works for testing)
-                import base64
-                frame_b64 = base64.b64encode(frame).decode('ascii')
-                payload = {"command": "BINARY_FRAME", "data": frame_b64}
-
-                url = f"http://{self.ip}:{self.http_port}/api/command"
-                print(f"[WiFiLink] HTTP POST binary frame: {frame.hex()}")
-
-                response = self._session.post(
-                    url,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=0.1  # 100ms timeout
-                )
-
-                if response.status_code == 200:
-                    print(f"[WiFiLink] ✅ Frame sent")
-                    return True
-                else:
-                    print(f"[WiFiLink] ❌ HTTP error {response.status_code}")
-                    return False
-
-            except Exception as e:
-                print(f"[WiFiLink] ❌ Send error: {e}")
-                logger.error(f"Frame send error: {e}")
-                return False
+    def _on_close(self, ws, close_status_code, close_msg):
+        """WebSocket closed."""
+        print(f"[WiFiLink] WebSocket closed")
+        self.connected = False
 
     def send_command(self, command: str, **kwargs) -> bool:
-        """
-        Send a command to ESP8266 via HTTP POST /api/command (JSON).
-
-        Translates REST command names to JSON:
-        - START → {"command": "START"}
-        - STOP → {"command": "STOP"}
-        - FREQUENCY → {"command": "FREQUENCY", "frequency": Hz}
-        - FORCE → {"command": "FORCE", "force": N, "sensor": (optional) 1-4}
-        - GOTO → {"command": "GOTO", "table": 1-4, "position": mm}
-        - etc.
-
-        Args:
-            command: Command name (e.g., 'START', 'FREQUENCY', 'FORCE')
-            **kwargs: Command-specific parameters
-
-        Returns:
-            True if sent successfully, False on error
-        """
+        """Send command via binary frame."""
         if not self.connected:
-            logger.error("Not connected to ESP8266")
+            logger.error("Not connected")
             return False
 
         cmd_upper = command.upper()
-        payload = {"command": cmd_upper.upper()}
-
-        # Add parameters
-        if kwargs:
-            payload.update(kwargs)
-
-        url = f"http://{self.ip}:{self.http_port}/api/command"
+        frame = None
 
         try:
-            print(f"[WiFiLink] HTTP POST: {payload}")
-
-            with self._http_lock:
-                response = self._session.post(
-                    url,
-                    headers=self.headers,
-                    json=payload,
-                    timeout=self.timeout
-                )
-
-            if response.status_code == 200:
-                print(f"[WiFiLink] ✅ Command '{cmd_upper}' sent")
-                return True
+            if cmd_upper == 'START':
+                frame = build_command_frame(0x01, b'')
+            elif cmd_upper == 'STOP':
+                frame = build_command_frame(0x02, b'')
+            elif cmd_upper in ('HARD_RESET', 'HOME'):
+                frame = build_command_frame(0x03, b'')
+            elif cmd_upper == 'FREQUENCY':
+                freq = int(kwargs.get('frequency', 0))
+                freq = max(0, min(100, freq))
+                frame = build_command_frame(0x10, bytes([freq]))
+            elif cmd_upper == 'FORCE':
+                sensor = kwargs.get('sensor')
+                force_mv = int(kwargs.get('force', 0))
+                force_mv = max(0, min(50000, force_mv))
+                if sensor is not None:
+                    sensor = max(1, min(4, int(sensor)))
+                    frame = build_command_frame(0x11, bytes([sensor]) + struct.pack('<H', force_mv))
+                else:
+                    frame = build_command_frame(0x12, struct.pack('<H', force_mv))
+            elif cmd_upper == 'GOTO':
+                table = max(1, min(4, int(kwargs.get('table', 1))))
+                pos_mm10 = int(kwargs.get('position', 0) * 10)
+                pos_mm10 = max(0, min(10000, pos_mm10))
+                frame = build_command_frame(0x20, bytes([table]) + struct.pack('<H', pos_mm10))
+            elif cmd_upper == 'MOTOR_BLINK':
+                motor = int(kwargs.get('motor_id', 0))
+                duration = int(kwargs.get('duration_ms', 500))
+                frame = build_command_frame(0x30, bytes([motor]) + struct.pack('<H', duration))
+            elif cmd_upper == 'SCAN_DXL':
+                frame = build_command_frame(0x31, b'')
+            elif cmd_upper == 'SET_RESISTANCE':
+                ohm = int(kwargs.get('resistance_ohm', 30))
+                ohm = max(0, min(65535, ohm))
+                frame = build_command_frame(0x40, struct.pack('<H', ohm))
+            elif cmd_upper in ('STATUS', 'GET_STATUS'):
+                frame = build_command_frame(0xF0, b'')
             else:
-                print(f"[WiFiLink] ❌ HTTP error {response.status_code}: {response.text}")
-                logger.error(f"HTTP error {response.status_code}")
+                print(f"[WiFiLink] ❌ Unknown command: {cmd_upper}")
                 return False
+
+            if frame:
+                hex_str = frame.hex()
+                print(f"[WiFiLink] TX: {hex_str}")
+                self.ws.send(hex_str, websocket.ABNF.OPCODE_TEXT)
+                return True
 
         except Exception as e:
             print(f"[WiFiLink] ❌ Send error: {e}")
-            logger.error(f"Command send error: {e}")
+            logger.error(f"Send error: {e}")
             return False
 
-        except Exception as e:
-            print(f"[WiFiLink] ❌ Frame construction error: {e}")
-            logger.error(f"Frame construction error: {e}")
-            return False
-
-        print(f"[WiFiLink] Sending command: {cmd_upper}")
-        logger.debug(f"Sending command: {cmd_upper} with kwargs={kwargs}")
-
-        # Send binary frame and return ACK result
-        return self.send_frame(frame)
-
-    def get_status(self) -> Optional[Dict[str, Any]]:
-        """Get ESP8266 status."""
-        if not self.connected:
-            logger.error("Not connected to ESP8266")
-            return None
-
-        try:
-            with self._http_lock:
-                response = self._session.get(
-                    f"{self.base_url}/api/status",
-                    headers=self.headers,
-                    timeout=self.timeout
-                )
-
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"Failed to get status: {response.status_code}")
-                return None
-        except Exception as e:
-            logger.error(f"Failed to get status: {e}")
-            return None
+        return False
 
     def send_line(self, command_str: str) -> bool:
-        """
-        Send command line to ESP8266 (backward compatibility with SerialLink).
+        """Compatibility with SerialLink interface."""
+        command_str = command_str.strip().upper()
 
-        Accepts three formats:
-        - REST names: START, STOP, HOME, HARD_RESET, GET_STATUS
-        - Colon protocol (produced by protocol.py):
-            SET_FREQ:50.0  → FREQUENCY frequency=50.0
-            SET_FORCE:10.5 → FORCE force=10.5 (global, all cells)
-            SET_FORCE:2:10.5 → FORCE force=10.5, sensor=2 (per-cell)
-            GOTO:1:50 → GOTO table=1, position=50 mm
-            BLINK_MOTOR:1:500 → MOTOR_BLINK motor_id=1, duration_ms=500
-            SET_RESISTANCE:30 → SET_RESISTANCE resistance_ohm=30
-        - Single-letter protocol: S, H, M, R, F50 (frequency), etc.
-
-        All formats are translated to binary frames via send_command().
-        """
-        command_str = command_str.strip()
-        if not command_str:
-            return False
-
-        upper = command_str.upper()
-        print(f"[WiFiLink] Parsing: {upper}")
-
-        # 1) Colon-delimited protocol commands (check BEFORE single-letter fallback)
-        if ":" in upper:
-            key, _, value = upper.partition(":")
+        if ':' in command_str:
+            key, _, value = command_str.partition(':')
             key = key.strip()
             value = value.strip()
 
-            # Per-cell force: "SET_FORCE:<sensor>:<force>"
-            if key == 'SET_FORCE' and ':' in value:
-                sensor_str, _, force_str = value.partition(":")
-                try:
-                    sensor = int(sensor_str.strip())
-                    force = float(force_str.strip()) if force_str.strip() else 0.0
-                except ValueError:
-                    sensor, force = 1, 0.0
-                return self.send_command('FORCE', force=force, sensor=sensor)
-
-            # Goto: "GOTO:<table>:<position>"
-            if key == 'GOTO' and ':' in value:
-                table_str, _, pos_str = value.partition(":")
-                try:
-                    table = int(table_str.strip())
-                    position = float(pos_str.strip()) if pos_str.strip() else 0.0
-                except ValueError:
-                    table, position = 1, 0.0
-                return self.send_command('GOTO', position=position, table=table)
-
-            # BLINK_MOTOR: "BLINK_MOTOR:<motor_id>:<duration_ms>"
-            if key == 'BLINK_MOTOR' and ':' in value:
-                motor_str, _, duration_str = value.partition(":")
-                try:
-                    motor_id = int(motor_str.strip())
-                    duration_ms = int(duration_str.strip()) if duration_str.strip() else 500
-                except ValueError:
-                    motor_id, duration_ms = 0, 500
-                return self.send_command('MOTOR_BLINK', motor_id=motor_id, duration_ms=duration_ms)
-
-            # SET_RESISTANCE: "SET_RESISTANCE:<resistance_ohm>" or "<board_id>:<ohm>"
-            if key == 'SET_RESISTANCE':
+            if key == 'SET_FREQ' or key == 'SET_FREQUENCY':
+                return self.send_command('FREQUENCY', frequency=float(value))
+            elif key == 'SET_FORCE':
                 parts = value.split(':')
-                try:
-                    if len(parts) == 1:
-                        resistance_ohm = int(parts[0].strip())
-                        return self.send_command('SET_RESISTANCE', resistance_ohm=resistance_ohm)
-                    else:
-                        # Ignore board_id for now (binary protocol doesn't have per-board granularity)
-                        resistance_ohm = int(parts[-1].strip())
-                        return self.send_command('SET_RESISTANCE', resistance_ohm=resistance_ohm)
-                except ValueError:
-                    return False
+                if len(parts) == 2:
+                    sensor = int(parts[0])
+                    force = float(parts[1])
+                    return self.send_command('FORCE', force=force, sensor=sensor)
+                else:
+                    return self.send_command('FORCE', force=float(value))
+            elif key == 'GOTO':
+                parts = value.split(':')
+                if len(parts) == 2:
+                    return self.send_command('GOTO', table=int(parts[0]), position=float(parts[1]))
 
-            # Generic colon map: "SET_FREQ:50" → FREQUENCY, frequency=50
-            colon_map = {
-                'SET_FREQ': ('FREQUENCY', 'frequency', float),
-                'SET_FREQUENCY': ('FREQUENCY', 'frequency', float),
-                'SET_SPEED': ('SPEED', 'speed', int),
-                'SET_FORCE': ('FORCE', 'force', float),  # Global force (no sensor specified)
-            }
+        if command_str in ('START', 'STOP', 'HOME', 'HARD_RESET', 'STATUS'):
+            return self.send_command(command_str)
 
-            if key in colon_map:
-                rest_cmd, field, caster = colon_map[key]
-                try:
-                    param = caster(value) if value else 0
-                except ValueError:
-                    param = 0
-                return self.send_command(rest_cmd, **{field: param})
-
-        # 2) Direct REST command names
-        rest_commands = {'START', 'STOP', 'HOME', 'HARD_RESET', 'STATUS',
-                         'TORQUE_ON', 'TORQUE_OFF', 'SCAN_DXL'}
-        if upper in rest_commands:
-            return self.send_command(upper)
-        if upper == 'GET_STATUS':
-            return self.send_command('STATUS')
-
-        # 3) Single-letter protocol fallback
-        cmd_char = upper[0]
-        cmd_param = upper[1:]
-        protocol_map = {
-            'H': ('HARD_RESET', {}),
-            'S': ('START', {}),
-            'M': ('STOP', {}),
-            'R': ('HARD_RESET', {}),
-            'F': ('FREQUENCY', {'frequency': float(cmd_param) if cmd_param else 0}),
-            'V': ('SPEED', {'speed': int(cmd_param) if cmd_param else 0}),
-        }
-
-        if cmd_char in protocol_map:
-            rest_cmd, params = protocol_map[cmd_char]
-            return self.send_command(rest_cmd, **params)
-
-        print(f"[WiFiLink] ❌ Unknown command: {upper}")
-        logger.warning(f"Unknown command: {upper}")
         return False
 
-    def write(self, data: str) -> bool:
-        """
-        Send raw command string to ESP8266.
-        For compatibility with SerialLink interface.
+    def get_status(self) -> Optional[Dict[str, Any]]:
+        """Get cached status (WebSocket streaming provides live data)."""
+        # Try to get one frame from queue without blocking
+        try:
+            frame = self.rx_queue.get_nowait()
+            if len(frame) == 20 and frame[0] == 0x53:  # STATUS frame
+                freq_hz10 = frame[1] | (frame[2] << 8)
+                positions = []
+                for i in range(4):
+                    pos_mm10 = frame[3 + i*2] | (frame[4 + i*2] << 8)
+                    positions.append(pos_mm10 / 10.0)
+                forces = []
+                for i in range(4):
+                    force_mv = frame[11 + i*2] | (frame[12 + i*2] << 8)
+                    forces.append(force_mv / 1000.0)
 
-        Args:
-            data: Command string
-        """
-        return self.send_line(data)
+                return {
+                    'frequency': freq_hz10 / 10.0,
+                    'positions': positions,
+                    'sensors': forces,
+                    'status': 'ok',
+                }
+        except queue.Empty:
+            pass
 
-    def read_line(self, timeout: Optional[float] = None) -> Optional[str]:
-        """
-        Read one response line from ESP8266.
-
-        Phase 3 (binary): Responses are NOT buffered (send_frame returns immediately).
-        This method returns None. Status comes from get_status() (HTTP cache).
-
-        Kept for backward compatibility with SerialLink interface.
-        """
-        # Binary protocol: no buffered responses
         return None
 
-    def readline(self, timeout: Optional[float] = None) -> Optional[str]:
-        """Alias for read_line (compatibility)."""
-        return self.read_line(timeout)
-
     def is_open(self) -> bool:
-        """Check if connection is open."""
         return self.connected
-
-    def open(self) -> bool:
-        """Open/connect to ESP8266 (called by MachineController)."""
-        return self.connect()
-
-    def close(self) -> bool:
-        """Close connection to ESP8266."""
-        return self.disconnect()
