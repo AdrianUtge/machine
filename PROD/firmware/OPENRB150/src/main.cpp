@@ -30,9 +30,9 @@
 
 // --- Lien série vers l'ESP8266 ---
 #define LINK            Serial3
-// ÉTAPE 2 FIX: réduit de 19200 → 9600 pour stabilité (SoftwareSerial + WiFi interference)
-// Trade-off: latence +2x mais zéro déconnexions aléatoires
-#define LINK_BAUD       9600       // Réduit pour stabilité SoftwareSerial sur ESP8266
+// Phase 3: Using hardware UART1 @ 19200 on ESP8266 (fast, stable)
+// Must match ESP8266 Serial1.begin(19200) in firmware/ESP8266/src/main.cpp
+#define LINK_BAUD       19200      // Hardware UART1, matches ESP Serial1.begin()
 
 // --- Streaming statut (liaison permanente) ---
 // On émet le burst de statut tout seul à 10 Hz, sans attendre de GET_STATUS.
@@ -645,14 +645,59 @@ void setup() {
 }
 
 void loop() {
-    // Réception des commandes ligne depuis l'ESP
+    // Réception des commandes depuis l'ESP (binaire ou texte)
+    static uint8_t bin_rx_buffer[64];
+    static size_t bin_rx_pos = 0;
+    static uint32_t bin_rx_last_byte_ms = 0;
+
     while (LINK.available()) {
-        char c = (char)LINK.read();
-        if (c == '\n' || c == '\r') {
-            if (g_rx.length() > 0) { dispatch(g_rx); g_rx = ""; }
-        } else if (g_rx.length() < 96) {
-            g_rx += c;
+        uint8_t byte = LINK.read();
+        bin_rx_last_byte_ms = millis();
+
+        // Debug: print incoming bytes
+        Serial.printf("[Serial3] RX: 0x%02X\n", byte);
+
+        // Check if it's a binary frame (starts with 0x43 = 'C' for command)
+        if (byte == 0x43 || (bin_rx_pos > 0 && bin_rx_pos < sizeof(bin_rx_buffer))) {
+            bin_rx_buffer[bin_rx_pos++] = byte;
+
+            // Try to detect complete frame
+            if (bin_rx_pos >= 3 && bin_rx_pos <= 8) {
+                // Binary frame format: [TYPE:1][CMD:1][ARGS:0-5][CRC8:1]
+                // Minimum 3 bytes, maximum 8 bytes
+                // For now, assume 3-byte minimum to detect end
+                if (byte == 0xBA || byte == 0xFF) { // CRC8 is usually non-printable
+                    Serial.printf("[Serial3] Binary frame detected: %u bytes\n", bin_rx_pos);
+                    Serial.print("[Serial3] Hex: ");
+                    for (size_t i = 0; i < bin_rx_pos; i++) {
+                        Serial.printf("%02X ", bin_rx_buffer[i]);
+                    }
+                    Serial.println();
+                    // TODO: dispatch binary frame
+                    bin_rx_pos = 0;
+                }
+            }
+
+            // Safety: if buffer gets too large, reset
+            if (bin_rx_pos >= sizeof(bin_rx_buffer)) {
+                Serial.printf("[Serial3] ⚠️ Buffer overflow, resetting\n");
+                bin_rx_pos = 0;
+            }
+        } else {
+            // Text mode: wait for newline
+            char c = (char)byte;
+            if (c == '\n' || c == '\r') {
+                if (g_rx.length() > 0) { dispatch(g_rx); g_rx = ""; }
+            } else if (g_rx.length() < 96) {
+                g_rx += c;
+            }
         }
+    }
+
+    // Timeout: if no bytes for 100ms, discard incomplete binary frame
+    if (bin_rx_pos > 0 && (millis() - bin_rx_last_byte_ms > 100)) {
+        Serial.printf("[Serial3] ⚠️ Timeout! Incomplete binary frame discarded (%u bytes)\n", bin_rx_pos);
+        bin_rx_pos = 0;
     }
 
     // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
