@@ -121,7 +121,7 @@ static bool is_complete_frame(const uint8_t* buf, size_t len, size_t& frame_size
 static void pumpOpenRB() {
     // Check UART1 status
     static uint32_t last_debug = 0;
-    int available_count = openrb_link->available();
+    int available_count = openrb_link.available();
 
     // Debug: periodically log UART1 status even if no data
     if (millis() - last_debug > 5000) {
@@ -131,8 +131,8 @@ static void pumpOpenRB() {
     }
 
     // Read available bytes from UART1
-    while (openrb_link->available()) {
-        uint8_t byte = openrb_link->read();
+    while (openrb_link.available()) {
+        uint8_t byte = openrb_link.read();
         rx_last_byte_ms = millis();
 
         Serial.printf("[UART1] RX byte: 0x%02X (pos=%u)\n", byte, rx_pos);
@@ -220,19 +220,12 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
             Serial.println();
 
             if (length > 0 && length <= 8) {
-                Serial.printf("[WS] ✓ Frame size valid, forwarding to UART1...\n");
-
-                // Check UART1 availability
-                if (openrb_link == nullptr) {
-                    Serial.println("[UART1] ❌ ERROR: openrb_link is NULL!");
-                    break;
-                }
-
+                Serial.printf("[WS] ✓ Frame size valid, forwarding to SoftwareSerial...\n");
                 Serial.printf("[UART1] Writing %u bytes...\n", length);
 
                 // Write each byte individually with debug
                 for (size_t i = 0; i < length; i++) {
-                    size_t written = openrb_link->write(payload[i]);
+                    size_t written = openrb_link.write(payload[i]);
                     Serial.printf("[UART1] Byte[%u]: 0x%02X → %u bytes written\n", i, payload[i], written);
                     if (written == 0) {
                         Serial.printf("[UART1] ❌ Write failed for byte[%u]!\n", i);
@@ -240,10 +233,10 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
                 }
 
                 Serial.println("[UART1] Flushing buffer...");
-                openrb_link->flush();
+                openrb_link.flush();
 
                 // Check UART1 status
-                int available = openrb_link->available();
+                int available = openrb_link.available();
                 Serial.printf("[UART1] ✅ Flush complete. Bytes available: %d\n", available);
 
             } else {
