@@ -125,16 +125,31 @@ static bool is_complete_frame(const uint8_t* buf, size_t len, size_t& frame_size
 
 // ===== UART1 Pump: Read from OpenRB, forward to WebSocket, cache STATUS =====
 static void pumpOpenRB() {
+    // Check UART1 status
+    static uint32_t last_debug = 0;
+    int available_count = openrb_link->available();
+
+    // Debug: periodically log UART1 status even if no data
+    if (millis() - last_debug > 5000) {
+        Serial.printf("[UART1] Status check: %d bytes available (buffer: %u/%u)\n",
+                      available_count, rx_pos, RX_BUFFER_SIZE);
+        last_debug = millis();
+    }
+
     // Read available bytes from UART1
     while (openrb_link->available()) {
         uint8_t byte = openrb_link->read();
         rx_last_byte_ms = millis();
+
+        Serial.printf("[UART1] RX byte: 0x%02X (pos=%u)\n", byte, rx_pos);
 
         // Add to buffer
         if (rx_pos < RX_BUFFER_SIZE) {
             rx_buffer[rx_pos++] = byte;
         } else {
             // Buffer overflow: discard oldest half and shift
+            Serial.printf("[UART1] ⚠️ Buffer overflow! Discarding oldest %u bytes\n",
+                         RX_BUFFER_SIZE / 2);
             memmove(rx_buffer, rx_buffer + RX_BUFFER_SIZE / 2, RX_BUFFER_SIZE / 2);
             rx_pos = RX_BUFFER_SIZE / 2;
             rx_buffer[rx_pos++] = byte;
@@ -146,24 +161,39 @@ static void pumpOpenRB() {
             // Found a complete frame
             uint8_t* frame = rx_buffer;
 
+            Serial.printf("[UART1] ✓ Complete frame detected: %u bytes, type=0x%02X\n",
+                         frame_size, frame[0]);
+
+            // Print hex dump
+            Serial.print("[UART1] Hex: ");
+            for (size_t i = 0; i < frame_size; i++) {
+                Serial.printf("%02X ", frame[i]);
+            }
+            Serial.println();
+
             // Cache STATUS frames (0xS) for GET /api/status fallback
             if (frame[0] == 0x53 && frame_size == 20) {
+                Serial.println("[UART1] → Caching STATUS frame");
                 memcpy(cached_status_frame, frame, 20);
                 has_cached_status = true;
                 last_status_ms = millis();
             }
 
             // Broadcast frame to all WebSocket clients
+            int clients = webSocket.connectedClients();
+            Serial.printf("[UART1] → Broadcasting to %d WebSocket clients\n", clients);
             webSocket.broadcastBIN(frame, frame_size);
 
             // Shift buffer: remove this frame, keep remainder
             memmove(rx_buffer, frame + frame_size, rx_pos - frame_size);
             rx_pos -= frame_size;
+            Serial.printf("[UART1] → Buffer cleared, remaining bytes: %u\n", rx_pos);
         }
     }
 
     // Timeout: if no bytes for 200ms, discard incomplete frame
     if (rx_pos > 0 && (millis() - rx_last_byte_ms > 200)) {
+        Serial.printf("[UART1] ⚠️ Timeout! Incomplete frame discarded (%u bytes)\n", rx_pos);
         rx_pos = 0;
     }
 }
@@ -185,11 +215,47 @@ static void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t 
 
         case WStype_BIN:
             // Forward binary frame to OpenRB via UART1
-            if (length > 0 && length <= 8) {
-                openrb_link->write(payload, length);
-                openrb_link->flush();
-                Serial.printf("[WS>UART] Forwarded %u bytes\n", length);
+            Serial.printf("[WS] ===== RX BINARY FRAME =====\n");
+            Serial.printf("[WS] Frame length: %u bytes\n", length);
+
+            // Debug: print hex dump
+            Serial.print("[WS] Hex dump: ");
+            for (size_t i = 0; i < length; i++) {
+                Serial.printf("%02X ", payload[i]);
             }
+            Serial.println();
+
+            if (length > 0 && length <= 8) {
+                Serial.printf("[WS] ✓ Frame size valid, forwarding to UART1...\n");
+
+                // Check UART1 availability
+                if (openrb_link == nullptr) {
+                    Serial.println("[UART1] ❌ ERROR: openrb_link is NULL!");
+                    break;
+                }
+
+                Serial.printf("[UART1] Writing %u bytes...\n", length);
+
+                // Write each byte individually with debug
+                for (size_t i = 0; i < length; i++) {
+                    size_t written = openrb_link->write(payload[i]);
+                    Serial.printf("[UART1] Byte[%u]: 0x%02X → %u bytes written\n", i, payload[i], written);
+                    if (written == 0) {
+                        Serial.printf("[UART1] ❌ Write failed for byte[%u]!\n", i);
+                    }
+                }
+
+                Serial.println("[UART1] Flushing buffer...");
+                openrb_link->flush();
+
+                // Check UART1 status
+                int available = openrb_link->available();
+                Serial.printf("[UART1] ✅ Flush complete. Bytes available: %d\n", available);
+
+            } else {
+                Serial.printf("[WS] ❌ Frame rejected: size %u exceeds 8 byte limit\n", length);
+            }
+            Serial.println("[WS] ===========================\n");
             break;
 
         case WStype_TEXT:
@@ -286,7 +352,17 @@ void setup() {
     Serial.println("[SETUP] Initializing UART1 @ 19200 baud...");
     Serial1.begin(OPENRB_BAUD);  // UART1 on ESP8266 uses fixed pins RX=GPIO13, TX=GPIO15
     delay(100);
-    Serial.println("[SETUP] UART1 ready");
+
+    // Verify UART1 initialization
+    openrb_link = &Serial1;
+    if (openrb_link == nullptr) {
+        Serial.println("[SETUP] ❌ FATAL: Failed to initialize UART1 (Serial1 is NULL)!");
+    } else {
+        Serial.println("[SETUP] ✓ UART1 initialized successfully");
+        Serial.printf("[SETUP]   UART1 object: %p\n", (void*)openrb_link);
+        Serial.printf("[SETUP]   Baud rate: %d\n", OPENRB_BAUD);
+        Serial.println("[SETUP]   Pins: RX=GPIO13 (D7), TX=GPIO15 (D8) [fixed on ESP8266]");
+    }
 
     // WebSocket server
     webSocket.begin();
