@@ -38,8 +38,8 @@
 // --- Streaming statut (liaison permanente) ---
 // On émet le burst de statut tout seul, sans attendre de GET_STATUS.
 // L'ESP cache le dernier burst -> /api/status devient instantané (pas d'A/R série).
-// Increased to 200ms to allow ESP SoftwareSerial to process frames (was causing buffer overflow)
-#define STREAM_PERIOD_MS 200
+// Increased to 400ms to prevent buffer overflow on ESP SoftwareSerial (2.5 Hz is safer than 5 Hz)
+#define STREAM_PERIOD_MS 400
 
 // --- Binary Protocol Response Codes (Phase 3) ---
 #define RESP_ACK             0x00
@@ -1115,15 +1115,14 @@ void loop() {
         bin_rx_pos = 0;  // Silently discard (avoid CPU lock)
     }
 
-    // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
-    // BUT: only start streaming after ESP has booted AND first command received (handshake)
-    // TEMPORARY: Disable STATUS streaming to fix buffer corruption issue
-    // Start streaming binary STATUS frames only after ESP has booted (3s delay) and sent at least one command
-    // static uint32_t lastStreamMs = 0;
-    // if (esp_ready && now >= 3000 && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
-    //     lastStreamMs = now;
-    //     sendStatusBinary();  // Use binary protocol (Phase 3)
-    // }
+    // Liaison permanente : burst de statut autonome à 2.5 Hz (STREAM_PERIOD_MS = 400ms, l'ESP le cache).
+    // Start streaming binary STATUS frames only after ESP has booted (3s delay) and sent at least one command (handshake)
+    // Increased STREAM_PERIOD_MS to 400ms to prevent SoftwareSerial buffer overflow on ESP
+    static uint32_t lastStreamMs = 0;
+    if (esp_ready && now >= 3000 && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
+        lastStreamMs = now;
+        sendStatusBinary();  // Use binary protocol (Phase 3)
+    }
 
     // Feedback LED : clignotement en RUNNING, fixe sinon.
     updateDxlLeds();
