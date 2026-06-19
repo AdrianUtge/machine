@@ -640,8 +640,8 @@ void setup() {
 
     stepperTimerInit();
 
-    LINK.println("ACK:BOOT");
-    LINK.print("STATE:"); LINK.println(modeStr());
+    // Don't send boot messages on LINK (SoftwareSerial) to avoid flooding ESP at startup
+    // Status streaming begins after 3-second delay in loop()
 }
 
 void loop() {
