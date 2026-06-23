@@ -56,6 +56,9 @@ struct SystemState {
     uint32_t uptime_ms = 0;
     int rssi = 0;
     const char* version = "3.0.0-phase3-websocket";
+    // DMA Freerun force acquisition config (mirrored from OpenRB)
+    uint16_t force_sample_count = 8192;
+    uint16_t force_sample_rate_kHz = 87;
 } state;
 
 // ===== CRC8 Checksum (matches OpenRB firmware and protocol spec) =====
@@ -312,6 +315,27 @@ static void handleOptions() {
     server.send(204);  // No Content
 }
 
+// ===== Endpoint: GET /api/config/force (Force acquisition config) =====
+static void handleForceConfig() {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.sendHeader("Content-Type", "application/json");
+
+    // Calculate derived values
+    float burst_duration_ms = (state.force_sample_count / (float)state.force_sample_rate_kHz) / 1000 * 1000;
+    int f_pulse = 32000;  // 10 Hz × 3200 steps
+    int trigger_step = 3200 - (int)(f_pulse * state.force_sample_count / (2.0f * state.force_sample_rate_kHz * 1000));
+
+    String json = "{\"sample_count\":" + String(state.force_sample_count) +
+                  ",\"sample_rate_kHz\":" + String(state.force_sample_rate_kHz) +
+                  ",\"burst_duration_ms\":" + String(burst_duration_ms, 1) +
+                  ",\"trigger_step\":" + String(trigger_step) +
+                  ",\"peak_position\":" + String(state.force_sample_count / 2) +
+                  ",\"adc_prescaler\":32,\"adc_averaging\":4" +
+                  "}";
+
+    server.send(200, "application/json", json);
+}
+
 // ===== LED Heartbeat =====
 static void updateLED() {
     static uint32_t last_toggle = 0;
@@ -365,6 +389,8 @@ void setup() {
     // HTTP server
     server.on("/api/status", HTTP_GET, handleStatus);
     server.on("/api/status", HTTP_OPTIONS, handleOptions);
+    server.on("/api/config/force", HTTP_GET, handleForceConfig);
+    server.on("/api/config/force", HTTP_OPTIONS, handleOptions);
 
     // Handle other OPTIONS requests (CORS preflight)
     server.onNotFound([]() {

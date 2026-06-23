@@ -147,6 +147,42 @@ float    g_force[4] = { 0, 0, 0, 0 };        // mesures (N) - Accessible to moto
 static uint8_t  g_dxlIds[4] = { 0, 0, 0, 0 };
 uint8_t  g_dxlCount = 0;  // Accessible to motor_init.cpp
 
+// ===== DMA FREERUN ACQUISITION (Load Cell Integration) =======================
+//
+// Topologie : ADC freerun @ 87 kSPS + DMA direct → RAM
+// Burst size : 8192 samples per cycle (94 ms @ 10 Hz rotation)
+// Centrage : burst déclenché au TRIGGER_STEP pour avoir point bas au centre
+// Recalage : correction stepCount via argmax(force peak) pour compenser drift moteur
+//
+// Voir PROD/docs/15_LOAD_CELL_CALIBRATION.md et TEST-PLATFORM/.../compilation_technique.md
+
+// --- DMA Buffers (one per force cell) ---
+// Large buffers to capture burst @ 87 kSPS for 94 ms (8192 samples)
+// Runtime configurable via SET_FORCE_BURST (0x40) command
+static int g_forceDmaBurstSize = 8192;  // Configurable at runtime (256–12000)
+static volatile uint16_t g_forceBurstBuffer[4][8192] __attribute__((aligned(4)));  // Always allocate max
+
+// Flags to track burst state per cell
+static volatile bool g_forceBurstReady[4] = { false, false, false, false };
+static volatile bool g_forceBurstArmed[4] = { false, false, false, false };
+
+// DMA descriptors (must be 16-byte aligned, one per cell)
+typedef struct {
+  uint16_t btctrl;
+  uint16_t btcnt;
+  uint32_t srcaddr;
+  uint32_t dstaddr;
+  uint32_t descaddr;
+} DmacDescriptor_t;
+
+__attribute__((aligned(16))) static DmacDescriptor_t g_dmacDescriptors[4];
+__attribute__((aligned(16))) static DmacDescriptor_t g_dmacWriteback[4];
+
+// ADC configuration for freerun mode (@ 87 kSPS with 4x averaging)
+static const float FORCE_SAMPLE_RATE = 87000.0f;  // Hz (prescaler /32, avg 4×)
+static const int FORCE_OFFSET_STEPS = (int)(32000.0f * FORCE_DMA_BURST_SIZE / (2.0f * FORCE_SAMPLE_RATE));
+static const int FORCE_TRIGGER_STEP = STEPS_PER_REV - FORCE_OFFSET_STEPS;  // ~1693 for 3200 steps
+
 // === Calibration & Limites Dynamixel ========================================
 // Position limites (mm) pour chaque table — établies lors du HOME
 static float    g_positionMin[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -173,6 +209,21 @@ extern "C" void TC3_Handler() {
         if (g_pulState) {                 // front montant = 1 step
             g_stepCount++;
             if (g_stepCount >= STEPS_PER_REV) g_stepCount = 0;
+
+            // DMA FREERUN: Trigger burst at anticipation point (centers burst on point bas)
+            if (g_stepCount == FORCE_TRIGGER_STEP) {
+                // Check all cells are ready (previous burst done) before starting new one
+                bool allDone = true;
+                for (uint8_t i = 0; i < 4; i++) {
+                    if (g_forceBurstArmed[i]) {
+                        allDone = false;
+                        break;
+                    }
+                }
+                if (allDone) {
+                    forceStartBurstDMA();
+                }
+            }
         }
     }
 }
@@ -216,29 +267,204 @@ static void stepperSetFrequency(float fRot) {
     g_stepperRunning = true;
 }
 
-// ===== Force : lecture INA125 (moyenne d'un burst) =========================
+// ===== ADC Freerun Setup ===================================================
 
-// Phase 1 : envoie les mV bruts au backend (calibration là-bas)
-static float readForcemV(uint8_t cell) {
+static void forceADCSetup() {
+    // Enable GCLK0 to ADC
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN |
+                        GCLK_CLKCTRL_GEN_GCLK0 |
+                        GCLK_CLKCTRL_ID_ADC;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // Reset ADC
+    ADC->CTRLA.bit.ENABLE = 0;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->CTRLA.bit.SWRST = 1;
+    while (ADC->CTRLA.bit.SWRST);
+
+    // Reference: VDDANA/2 with gain 1/2
+    ADC->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC1;
+
+    // Control: prescaler /32, 12-bit resolution, freerun mode
+    ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV32 |
+                     ADC_CTRLB_RESSEL_12BIT |
+                     ADC_CTRLB_FREERUN;
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    // Input: single-ended, pin A0 (will be changed per cell), gain 1/2
+    ADC->INPUTCTRL.reg = ADC_INPUTCTRL_MUXNEG_GND |
+                         ADC_INPUTCTRL_MUXPOS_PIN0 |
+                         ADC_INPUTCTRL_GAIN_DIV2;
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    // Averaging: 4 samples, adjustment right-shift 2 → ~87 kSPS effective
+    ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 |
+                       ADC_AVGCTRL_ADJRES(2);
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    // Sampling: 4 clock cycles (SAMD21 requires >= 2)
+    ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(4);
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ===== DMA Setup ===========================================================
+
+static void forceDMASetup() {
+    // Enable DMA clocks
+    PM->AHBMASK.bit.DMAC_ = 1;
+    PM->APBBMASK.bit.DMAC_ = 1;
+
+    // Reset DMAC
+    DMAC->CTRL.bit.DMAENABLE = 0;
+    DMAC->CTRL.bit.SWRST = 1;
+
+    // Configure DMA
+    DMAC->BASEADDR.reg = (uint32_t)g_dmacDescriptors;
+    DMAC->WRBADDR.reg = (uint32_t)g_dmacWriteback;
+    DMAC->CTRL.reg = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);
+
+    // Configure 4 DMA channels (one per force cell A1-A4 = ADC AIN1-4)
+    for (uint8_t ch = 0; ch < 4; ch++) {
+        DMAC->CHID.reg = ch;
+        DMAC->CHCTRLB.reg = DMAC_CHCTRLB_TRIGSRC(ADC_DMAC_ID_RESRDY) |
+                            DMAC_CHCTRLB_TRIGACT_BEAT |
+                            DMAC_CHCTRLB_LVL(0);
+        DMAC->CHINTENSET.reg = DMAC_CHINTENSET_TCMPL;
+    }
+
+    // Enable DMA interrupts
+    NVIC_EnableIRQ(DMAC_IRQn);
+    NVIC_SetPriority(DMAC_IRQn, 1);  // Lower priority than TC3 (stepper)
+}
+
+// Arm DMA descriptor for one cell
+static void forceArmDMABurst(uint8_t cell) {
+    DMAC->CHID.reg = cell;
+    DMAC->CHCTRLA.bit.ENABLE = 0;
+
+    int burstSize = g_forceDmaBurstSize;  // Use runtime-configurable size
+
+    g_dmacDescriptors[cell].btctrl = DMAC_BTCTRL_VALID |
+                                     DMAC_BTCTRL_BEATSIZE_HWORD |
+                                     DMAC_BTCTRL_DSTINC |
+                                     DMAC_BTCTRL_BLOCKACT_INT;
+    g_dmacDescriptors[cell].btcnt = burstSize;
+    g_dmacDescriptors[cell].srcaddr = (uint32_t)&ADC->RESULT.reg;
+    g_dmacDescriptors[cell].dstaddr = (uint32_t)g_forceBurstBuffer[cell] +
+                                      burstSize * sizeof(uint16_t);
+    g_dmacDescriptors[cell].descaddr = 0;
+
+    DMAC->CHID.reg = cell;
+    DMAC->CHCTRLA.bit.ENABLE = 1;
+}
+
+// Start a DMA burst for all 4 cells
+static void forceStartBurstDMA() {
+    for (uint8_t cell = 0; cell < 4; cell++) {
+        g_forceBurstReady[cell] = false;
+        g_forceBurstArmed[cell] = true;
+        forceArmDMABurst(cell);
+    }
+
+    // Start ADC freerun
+    ADC->CTRLA.bit.ENABLE = 1;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->SWTRIG.bit.START = 1;
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ===== DMA ISR =============================================================
+
+extern "C" void DMAC_Handler() {
+    // Multiple channels fire this handler
+    for (uint8_t ch = 0; ch < 4; ch++) {
+        DMAC->CHID.reg = ch;
+        if (DMAC->CHINTFLAG.bit.TCMPL) {
+            DMAC->CHINTFLAG.bit.TCMPL = 1;
+            g_forceBurstReady[ch] = true;
+            g_forceBurstArmed[ch] = false;
+        }
+    }
+
+    // Disable ADC after all 4 bursts complete
+    ADC->CTRLA.bit.ENABLE = 0;
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ===== Force : lecture INA125 (DMA burst, centré sur point bas) =============
+
+// Read force from completed DMA burst buffer, with auto-recalibration on force peak
+static float readForcemVFromBurst(uint8_t cell) {
+    if (!g_forceBurstReady[cell]) {
+        return 0.0f;  // Burst not ready yet
+    }
+
+    g_forceBurstReady[cell] = false;
+
+    int burstSize = g_forceDmaBurstSize;  // Use runtime-configurable size
+
+    // Find peak (max ADC sample in burst)
+    int iPeakIdx = 0;
+    uint16_t peakVal = g_forceBurstBuffer[cell][0];
+    for (int i = 1; i < burstSize; i++) {
+        if (g_forceBurstBuffer[cell][i] > peakVal) {
+            peakVal = g_forceBurstBuffer[cell][i];
+            iPeakIdx = i;
+        }
+    }
+
+    // Auto-recalibration: correct stepCount drift based on peak position
+    // Peak should be at burstSize/2; if offset, we've lost steps
+    int deltaIdx = iPeakIdx - (burstSize / 2);
+    if (abs(deltaIdx) > 10) {  // Only correct if drift > 10 samples (≈3.7 steps)
+        float stepDrift = deltaIdx * (32000.0f / FORCE_SAMPLE_RATE);
+        g_stepCount += (int)stepDrift;
+        if (g_stepCount < 0) g_stepCount = 0;
+        if (g_stepCount >= STEPS_PER_REV) g_stepCount -= STEPS_PER_REV;
+
+        // Log significant corrections
+        if (abs(deltaIdx) > 50) {
+            Serial.print("[force] Peak drift correction: ");
+            Serial.print(deltaIdx); Serial.print(" samples, ");
+            Serial.print((int)stepDrift); Serial.println(" steps");
+        }
+    }
+
+    // Average all burst samples → counts
+    uint32_t sumCounts = 0;
+    for (int i = 0; i < burstSize; i++) {
+        sumCounts += g_forceBurstBuffer[cell][i];
+    }
+    float avgCounts = (float)sumCounts / burstSize;
+
+    // Convert counts → mV
+    return (avgCounts / ADC_RESOLUTION_STEPS) * ADC_VREF;
+}
+
+// Fallback: simple read when DMA burst not available
+static float readForcemVSimple(uint8_t cell) {
     uint32_t acc = 0;
     for (uint8_t i = 0; i < FORCE_BURST; i++) acc += analogRead(FORCE_PINS[cell]);
     float counts = (float)acc / FORCE_BURST;
-    // Convertir ADC counts -> mV
-    // mV = (counts / 4096) × VREF_mV
     return (counts / ADC_RESOLUTION_STEPS) * ADC_VREF;
 }
 
-// Phase 2 : sera utilisé pour la boucle fermée locale (après réception calibration du backend)
+// Phase 2 : will be used for local force-feedback loop (after backend calibration)
 // static float readForceN(uint8_t cell) {
-//     uint32_t acc = 0;
-//     for (uint8_t i = 0; i < FORCE_BURST; i++) acc += analogRead(FORCE_PINS[cell]);
-//     float counts = (float)acc / FORCE_BURST;
-//     return (counts - FORCE_OFFSET[cell]) * FORCE_GAIN[cell];
+//     float mv = readForcemVFromBurst(cell);
+//     if (mv == 0.0f) mv = readForcemVSimple(cell);
+//     return (mv / ADC_VREF) * ADC_RESOLUTION_STEPS * FORCE_GAIN[cell] + FORCE_OFFSET[cell];
 // }
 
 void readAllForces() {
-    // Phase 1 : envoyer mV bruts
-    for (uint8_t i = 0; i < N_TABLES; i++) g_force[i] = readForcemV(i);
+    // Use DMA burst (87 kSPS with auto-recalibration) when available, fallback to simple read
+    for (uint8_t i = 0; i < N_TABLES; i++) {
+        float mV = readForcemVFromBurst(i);
+        if (mV == 0.0f) {
+            mV = readForcemVSimple(i);  // Fallback if burst not ready
+        }
+        g_force[i] = mV;
+    }
 }
 
 // ===== Dynamixel ===========================================================
@@ -996,6 +1222,38 @@ static void handleBinaryCommand(const uint8_t* frame, size_t len) {
             sendResponseBinary(RESP_ACK);
             handled = true;
             break;
+        case 0x40:  // SET_FORCE_BURST (dynamic sample count)
+            if (len >= 4) {
+                // Unpack size as little-endian u16
+                uint16_t new_burst_size = frame[2] | (frame[3] << 8);
+
+                // Validate range (256–12000)
+                if (new_burst_size < 256 || new_burst_size > 12000) {
+                    sendResponseBinary(RESP_ERROR_INVALID_ARG);
+                } else {
+                    // Recalculate trigger step for new burst size
+                    int old_burst = g_forceDmaBurstSize;
+                    int old_trigger = FORCE_TRIGGER_STEP;
+
+                    g_forceDmaBurstSize = new_burst_size;
+                    // FORCE_TRIGGER_STEP = STEPS_PER_REV - (int)(32000 * size / (2 * 87000))
+                    int new_trigger = (int)(3200 - (32000 * new_burst_size / (2.0f * 87000)));
+
+                    // Adjust step counter if timing shifted
+                    int trigger_delta = new_trigger - old_trigger;
+                    g_stepCount += trigger_delta;
+                    if (g_stepCount < 0) g_stepCount = 0;
+                    if (g_stepCount >= STEPS_PER_REV) g_stepCount -= STEPS_PER_REV;
+
+                    Serial.print("[force] Burst size updated: ");
+                    Serial.print(old_burst); Serial.print(" → ");
+                    Serial.println(new_burst_size);
+
+                    sendResponseBinary(RESP_ACK);
+                    handled = true;
+                }
+            }
+            break;
         case 0xF0:  // GET_STATUS
             sendStatusBinary();  // Send binary STATUS frame
             sendResponseBinary(RESP_ACK);
@@ -1024,6 +1282,10 @@ void setup() {
     digitalWrite(5, LOW);                // 30 Ω (relay 2 OFF)
 
     analogReadResolution(12);            // 0..4095
+
+    // Initialize DMA Freerun acquisition for load cells
+    forceADCSetup();
+    forceDMASetup();
 
     LINK.begin(LINK_BAUD);               // lien vers l'ESP8266
 

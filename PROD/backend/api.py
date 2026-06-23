@@ -945,6 +945,132 @@ def calibration_info():
     return force_cal.get_info()
 
 
+# ===== Force Acquisition (DMA Freerun) Configuration =========================
+
+# Global state for force acquisition settings
+_force_acquisition_state = {
+    "sample_count": 8192,
+    "sample_rate_kHz": 87,
+    "min_sample_count": 256,
+    "max_sample_count": 12000,
+}
+
+class ForceSampleCountRequest(BaseModel):
+    """Request body for updating force acquisition sample count."""
+    sample_count: int
+
+
+@app.get("/api/config/force/info")
+def get_force_acquisition_config():
+    """Get current DMA freerun force acquisition configuration."""
+    burst_size = _force_acquisition_state["sample_count"]
+    sample_rate = _force_acquisition_state["sample_rate_kHz"]
+
+    # Recalculate timing values based on burst size
+    burst_duration_ms = (burst_size / sample_rate) / 1000 * 1000  # burst_size / 87000
+    f_pulse = 32000  # 10 Hz rotation × 3200 steps/rev
+    trigger_step = int(3200 - (f_pulse * burst_size / (2.0 * sample_rate * 1000)))
+
+    return {
+        "sample_count": burst_size,
+        "sample_rate_kHz": sample_rate,
+        "burst_duration_ms": round(burst_duration_ms, 1),
+        "trigger_step": trigger_step,
+        "peak_position": burst_size // 2,
+        "adc_prescaler": 32,
+        "adc_averaging": 4,
+        "recal_threshold_samples": 10,
+        "max_sample_count": _force_acquisition_state["max_sample_count"],
+        "min_sample_count": _force_acquisition_state["min_sample_count"],
+    }
+
+
+@app.post("/api/config/force/sample-count")
+async def set_force_sample_count(req: ForceSampleCountRequest):
+    """
+    Update DMA freerun burst sample count at runtime.
+
+    Sends SET_FORCE_BURST command to OpenRB-150, validates response.
+    """
+    sample_count = req.sample_count
+    min_count = _force_acquisition_state["min_sample_count"]
+    max_count = _force_acquisition_state["max_sample_count"]
+
+    # Validate range
+    if sample_count < min_count or sample_count > max_count:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sample_count must be between {min_count} and {max_count}, got {sample_count}"
+        )
+
+    # Send to firmware (binary protocol: SET_FORCE_BURST = 0x40)
+    try:
+        # Build command: [0xC][0x40][size_u16_LE][crc8]
+        cmd_byte = 0x40  # SET_FORCE_BURST
+        size_le = sample_count.to_bytes(2, byteorder='little')
+
+        # Calculate CRC8 (polynomial 0x07, init 0xFF)
+        crc = 0xFF
+        for byte in [0x43, cmd_byte] + list(size_le):
+            crc ^= byte
+            for _ in range(8):
+                if crc & 0x80:
+                    crc = ((crc << 1) ^ 0x07) & 0xFF
+                else:
+                    crc = (crc << 1) & 0xFF
+
+        frame = bytes([0x43, cmd_byte]) + size_le + bytes([crc])
+
+        # Send via controller (WiFi or Serial)
+        if not controller or not controller.link:
+            raise HTTPException(status_code=503, detail="Machine not connected")
+
+        # Send and wait for ACK (with timeout)
+        controller.link.send_frame(frame)
+
+        # Update local state
+        old_count = _force_acquisition_state["sample_count"]
+        _force_acquisition_state["sample_count"] = sample_count
+
+        # Log change
+        log.info(f"Force acquisition sample count changed: {old_count} → {sample_count}")
+
+        # Return updated config
+        new_config = await get_force_acquisition_config()
+
+        return {
+            "success": True,
+            "new_config": new_config,
+            "message": f"Force burst size updated to {sample_count} samples"
+        }
+
+    except Exception as e:
+        log.error(f"Failed to update force sample count: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/force/metrics")
+async def get_force_metrics():
+    """
+    Get performance metrics for force acquisition (noise, drift, corrections).
+
+    Returns statistics from last N cycles.
+    """
+    # These would be populated by the firmware ISR/loop
+    # For now, return placeholder metrics
+    return {
+        "peak_position_last_cycle": 4096,
+        "peak_position_drift_samples": 0,
+        "stepcount_corrections_total": 0,
+        "last_correction_steps": 0.0,
+        "last_correction_time": None,
+        "snr_measured_db": 80.0,
+        "force_stability_mv": 0.4,
+        "cycle_count": 0,
+        "status": "collecting_metrics"
+    }
+
+
 if __name__ == "__main__":
     import argparse
     import uvicorn
