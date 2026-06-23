@@ -25,6 +25,7 @@
 
 #include <Arduino.h>
 #include <Dynamixel2Arduino.h>
+#include "motor_init.h"
 
 // ===== Configuration =======================================================
 
@@ -37,8 +38,8 @@
 // --- Streaming statut (liaison permanente) ---
 // On émet le burst de statut tout seul, sans attendre de GET_STATUS.
 // L'ESP cache le dernier burst -> /api/status devient instantané (pas d'A/R série).
-// Increased to 200ms to allow ESP SoftwareSerial to process frames (was causing buffer overflow)
-#define STREAM_PERIOD_MS 200
+// Increased to 400ms to prevent buffer overflow on ESP SoftwareSerial (2.5 Hz is safer than 5 Hz)
+#define STREAM_PERIOD_MS 400
 
 // --- Binary Protocol Response Codes (Phase 3) ---
 #define RESP_ACK             0x00
@@ -101,7 +102,6 @@ static float g_forcePeakCycle[4] = { 0, 0, 0, 0 };  // Force max durant fenêtre
 static uint16_t g_forcePeakStepCountCycle = 0;      // g_stepCount du peak
 
 // État de la boucle fermée
-static uint32_t lastForceLoopMs = 0;
 static bool lastInForceWindow = false;
 
 // Handshake with ESP: true after first command received
@@ -141,11 +141,59 @@ static Mode     g_mode = Mode::IDLE;
 static bool     g_homed = false;
 static int32_t  g_speed = 100;          // %
 static float    g_frequency = 0.8f;     // Hz (oscillation)
-static float    g_forceTarget[4] = { 0, 0, 0, 0 };  // consignes (ÉTAPE 2)
-static float    g_force[4] = { 0, 0, 0, 0 };        // mesures (N)
+float    g_forceTarget[4] = { 0, 0, 0, 0 };  // consignes (ÉTAPE 2) - Accessible to motor_init.cpp
+float    g_force[4] = { 0, 0, 0, 0 };        // mesures (N) - Accessible to motor_init.cpp
 
 static uint8_t  g_dxlIds[4] = { 0, 0, 0, 0 };
-static uint8_t  g_dxlCount = 0;
+uint8_t  g_dxlCount = 0;  // Accessible to motor_init.cpp
+
+// ===== DMA FREERUN ACQUISITION (Load Cell Integration) =======================
+//
+// Topologie : ADC freerun @ 87 kSPS + DMA direct → RAM
+// Burst size : 8192 samples per cycle (94 ms @ 10 Hz rotation)
+// Centrage : burst déclenché au TRIGGER_STEP pour avoir point bas au centre
+// Recalage : correction stepCount via argmax(force peak) pour compenser drift moteur
+//
+// Voir PROD/docs/15_LOAD_CELL_CALIBRATION.md et TEST-PLATFORM/.../compilation_technique.md
+
+// --- DMA Buffers (one per force cell) ---
+// Large buffers to capture burst @ 87 kSPS for 94 ms (8192 samples)
+// Runtime configurable via SET_FORCE_BURST (0x40) command
+static int g_forceDmaBurstSize = 8192;  // Configurable at runtime (256–12000)
+static volatile uint16_t g_forceBurstBuffer[4][8192] __attribute__((aligned(4)));  // Always allocate max
+
+// Flags to track burst state per cell
+static volatile bool g_forceBurstReady[4] = { false, false, false, false };
+static volatile bool g_forceBurstArmed[4] = { false, false, false, false };
+
+// DMA descriptors (must be 16-byte aligned, one per cell)
+typedef struct {
+  uint16_t btctrl;
+  uint16_t btcnt;
+  uint32_t srcaddr;
+  uint32_t dstaddr;
+  uint32_t descaddr;
+} DmacDescriptor_t;
+
+__attribute__((aligned(16))) static DmacDescriptor_t g_dmacDescriptors[4];
+__attribute__((aligned(16))) static DmacDescriptor_t g_dmacWriteback[4];
+
+// ADC configuration for freerun mode (@ 87 kSPS with 4x averaging)
+static const float FORCE_SAMPLE_RATE = 87000.0f;  // Hz (prescaler /32, avg 4×)
+static const int FORCE_OFFSET_STEPS = (int)(32000.0f * FORCE_DMA_BURST_SIZE / (2.0f * FORCE_SAMPLE_RATE));
+static const int FORCE_TRIGGER_STEP = STEPS_PER_REV - FORCE_OFFSET_STEPS;  // ~1693 for 3200 steps
+
+// === Calibration & Limites Dynamixel ========================================
+// Position limites (mm) pour chaque table — établies lors du HOME
+static float    g_positionMin[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+static float    g_positionMax[4] = { 96.0f, 96.0f, 96.0f, 96.0f };  // a priori
+
+// Position cible mémorisée
+static float    g_positionTarget[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+// Paramètres calibration (depuis .machine_config.ini via ESP)
+static float    DXL_TORQUE_THRESHOLD = 800.0f;   // seuil de détection limite (0–1023)
+static uint16_t DXL_CALIB_STEP_DELAY_MS = 50;    // délai polling lors calibration
 
 // ===== Stepper : Timer TC3 =================================================
 
@@ -161,6 +209,21 @@ extern "C" void TC3_Handler() {
         if (g_pulState) {                 // front montant = 1 step
             g_stepCount++;
             if (g_stepCount >= STEPS_PER_REV) g_stepCount = 0;
+
+            // DMA FREERUN: Trigger burst at anticipation point (centers burst on point bas)
+            if (g_stepCount == FORCE_TRIGGER_STEP) {
+                // Check all cells are ready (previous burst done) before starting new one
+                bool allDone = true;
+                for (uint8_t i = 0; i < 4; i++) {
+                    if (g_forceBurstArmed[i]) {
+                        allDone = false;
+                        break;
+                    }
+                }
+                if (allDone) {
+                    forceStartBurstDMA();
+                }
+            }
         }
     }
 }
@@ -204,29 +267,204 @@ static void stepperSetFrequency(float fRot) {
     g_stepperRunning = true;
 }
 
-// ===== Force : lecture INA125 (moyenne d'un burst) =========================
+// ===== ADC Freerun Setup ===================================================
 
-// Phase 1 : envoie les mV bruts au backend (calibration là-bas)
-static float readForcemV(uint8_t cell) {
+static void forceADCSetup() {
+    // Enable GCLK0 to ADC
+    GCLK->CLKCTRL.reg = GCLK_CLKCTRL_CLKEN |
+                        GCLK_CLKCTRL_GEN_GCLK0 |
+                        GCLK_CLKCTRL_ID_ADC;
+    while (GCLK->STATUS.bit.SYNCBUSY);
+
+    // Reset ADC
+    ADC->CTRLA.bit.ENABLE = 0;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->CTRLA.bit.SWRST = 1;
+    while (ADC->CTRLA.bit.SWRST);
+
+    // Reference: VDDANA/2 with gain 1/2
+    ADC->REFCTRL.reg = ADC_REFCTRL_REFSEL_INTVCC1;
+
+    // Control: prescaler /32, 12-bit resolution, freerun mode
+    ADC->CTRLB.reg = ADC_CTRLB_PRESCALER_DIV32 |
+                     ADC_CTRLB_RESSEL_12BIT |
+                     ADC_CTRLB_FREERUN;
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    // Input: single-ended, pin A0 (will be changed per cell), gain 1/2
+    ADC->INPUTCTRL.reg = ADC_INPUTCTRL_MUXNEG_GND |
+                         ADC_INPUTCTRL_MUXPOS_PIN0 |
+                         ADC_INPUTCTRL_GAIN_DIV2;
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    // Averaging: 4 samples, adjustment right-shift 2 → ~87 kSPS effective
+    ADC->AVGCTRL.reg = ADC_AVGCTRL_SAMPLENUM_4 |
+                       ADC_AVGCTRL_ADJRES(2);
+    while (ADC->STATUS.bit.SYNCBUSY);
+
+    // Sampling: 4 clock cycles (SAMD21 requires >= 2)
+    ADC->SAMPCTRL.reg = ADC_SAMPCTRL_SAMPLEN(4);
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ===== DMA Setup ===========================================================
+
+static void forceDMASetup() {
+    // Enable DMA clocks
+    PM->AHBMASK.bit.DMAC_ = 1;
+    PM->APBBMASK.bit.DMAC_ = 1;
+
+    // Reset DMAC
+    DMAC->CTRL.bit.DMAENABLE = 0;
+    DMAC->CTRL.bit.SWRST = 1;
+
+    // Configure DMA
+    DMAC->BASEADDR.reg = (uint32_t)g_dmacDescriptors;
+    DMAC->WRBADDR.reg = (uint32_t)g_dmacWriteback;
+    DMAC->CTRL.reg = DMAC_CTRL_DMAENABLE | DMAC_CTRL_LVLEN(0xF);
+
+    // Configure 4 DMA channels (one per force cell A1-A4 = ADC AIN1-4)
+    for (uint8_t ch = 0; ch < 4; ch++) {
+        DMAC->CHID.reg = ch;
+        DMAC->CHCTRLB.reg = DMAC_CHCTRLB_TRIGSRC(ADC_DMAC_ID_RESRDY) |
+                            DMAC_CHCTRLB_TRIGACT_BEAT |
+                            DMAC_CHCTRLB_LVL(0);
+        DMAC->CHINTENSET.reg = DMAC_CHINTENSET_TCMPL;
+    }
+
+    // Enable DMA interrupts
+    NVIC_EnableIRQ(DMAC_IRQn);
+    NVIC_SetPriority(DMAC_IRQn, 1);  // Lower priority than TC3 (stepper)
+}
+
+// Arm DMA descriptor for one cell
+static void forceArmDMABurst(uint8_t cell) {
+    DMAC->CHID.reg = cell;
+    DMAC->CHCTRLA.bit.ENABLE = 0;
+
+    int burstSize = g_forceDmaBurstSize;  // Use runtime-configurable size
+
+    g_dmacDescriptors[cell].btctrl = DMAC_BTCTRL_VALID |
+                                     DMAC_BTCTRL_BEATSIZE_HWORD |
+                                     DMAC_BTCTRL_DSTINC |
+                                     DMAC_BTCTRL_BLOCKACT_INT;
+    g_dmacDescriptors[cell].btcnt = burstSize;
+    g_dmacDescriptors[cell].srcaddr = (uint32_t)&ADC->RESULT.reg;
+    g_dmacDescriptors[cell].dstaddr = (uint32_t)g_forceBurstBuffer[cell] +
+                                      burstSize * sizeof(uint16_t);
+    g_dmacDescriptors[cell].descaddr = 0;
+
+    DMAC->CHID.reg = cell;
+    DMAC->CHCTRLA.bit.ENABLE = 1;
+}
+
+// Start a DMA burst for all 4 cells
+static void forceStartBurstDMA() {
+    for (uint8_t cell = 0; cell < 4; cell++) {
+        g_forceBurstReady[cell] = false;
+        g_forceBurstArmed[cell] = true;
+        forceArmDMABurst(cell);
+    }
+
+    // Start ADC freerun
+    ADC->CTRLA.bit.ENABLE = 1;
+    while (ADC->STATUS.bit.SYNCBUSY);
+    ADC->SWTRIG.bit.START = 1;
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ===== DMA ISR =============================================================
+
+extern "C" void DMAC_Handler() {
+    // Multiple channels fire this handler
+    for (uint8_t ch = 0; ch < 4; ch++) {
+        DMAC->CHID.reg = ch;
+        if (DMAC->CHINTFLAG.bit.TCMPL) {
+            DMAC->CHINTFLAG.bit.TCMPL = 1;
+            g_forceBurstReady[ch] = true;
+            g_forceBurstArmed[ch] = false;
+        }
+    }
+
+    // Disable ADC after all 4 bursts complete
+    ADC->CTRLA.bit.ENABLE = 0;
+    while (ADC->STATUS.bit.SYNCBUSY);
+}
+
+// ===== Force : lecture INA125 (DMA burst, centré sur point bas) =============
+
+// Read force from completed DMA burst buffer, with auto-recalibration on force peak
+static float readForcemVFromBurst(uint8_t cell) {
+    if (!g_forceBurstReady[cell]) {
+        return 0.0f;  // Burst not ready yet
+    }
+
+    g_forceBurstReady[cell] = false;
+
+    int burstSize = g_forceDmaBurstSize;  // Use runtime-configurable size
+
+    // Find peak (max ADC sample in burst)
+    int iPeakIdx = 0;
+    uint16_t peakVal = g_forceBurstBuffer[cell][0];
+    for (int i = 1; i < burstSize; i++) {
+        if (g_forceBurstBuffer[cell][i] > peakVal) {
+            peakVal = g_forceBurstBuffer[cell][i];
+            iPeakIdx = i;
+        }
+    }
+
+    // Auto-recalibration: correct stepCount drift based on peak position
+    // Peak should be at burstSize/2; if offset, we've lost steps
+    int deltaIdx = iPeakIdx - (burstSize / 2);
+    if (abs(deltaIdx) > 10) {  // Only correct if drift > 10 samples (≈3.7 steps)
+        float stepDrift = deltaIdx * (32000.0f / FORCE_SAMPLE_RATE);
+        g_stepCount += (int)stepDrift;
+        if (g_stepCount < 0) g_stepCount = 0;
+        if (g_stepCount >= STEPS_PER_REV) g_stepCount -= STEPS_PER_REV;
+
+        // Log significant corrections
+        if (abs(deltaIdx) > 50) {
+            Serial.print("[force] Peak drift correction: ");
+            Serial.print(deltaIdx); Serial.print(" samples, ");
+            Serial.print((int)stepDrift); Serial.println(" steps");
+        }
+    }
+
+    // Average all burst samples → counts
+    uint32_t sumCounts = 0;
+    for (int i = 0; i < burstSize; i++) {
+        sumCounts += g_forceBurstBuffer[cell][i];
+    }
+    float avgCounts = (float)sumCounts / burstSize;
+
+    // Convert counts → mV
+    return (avgCounts / ADC_RESOLUTION_STEPS) * ADC_VREF;
+}
+
+// Fallback: simple read when DMA burst not available
+static float readForcemVSimple(uint8_t cell) {
     uint32_t acc = 0;
     for (uint8_t i = 0; i < FORCE_BURST; i++) acc += analogRead(FORCE_PINS[cell]);
     float counts = (float)acc / FORCE_BURST;
-    // Convertir ADC counts -> mV
-    // mV = (counts / 4096) × VREF_mV
     return (counts / ADC_RESOLUTION_STEPS) * ADC_VREF;
 }
 
-// Phase 2 : sera utilisé pour la boucle fermée locale (après réception calibration du backend)
-static float readForceN(uint8_t cell) {
-    uint32_t acc = 0;
-    for (uint8_t i = 0; i < FORCE_BURST; i++) acc += analogRead(FORCE_PINS[cell]);
-    float counts = (float)acc / FORCE_BURST;
-    return (counts - FORCE_OFFSET[cell]) * FORCE_GAIN[cell];
-}
+// Phase 2 : will be used for local force-feedback loop (after backend calibration)
+// static float readForceN(uint8_t cell) {
+//     float mv = readForcemVFromBurst(cell);
+//     if (mv == 0.0f) mv = readForcemVSimple(cell);
+//     return (mv / ADC_VREF) * ADC_RESOLUTION_STEPS * FORCE_GAIN[cell] + FORCE_OFFSET[cell];
+// }
 
-static void readAllForces() {
-    // Phase 1 : envoyer mV bruts
-    for (uint8_t i = 0; i < N_TABLES; i++) g_force[i] = readForcemV(i);
+void readAllForces() {
+    // Use DMA burst (87 kSPS with auto-recalibration) when available, fallback to simple read
+    for (uint8_t i = 0; i < N_TABLES; i++) {
+        float mV = readForcemVFromBurst(i);
+        if (mV == 0.0f) {
+            mV = readForcemVSimple(i);  // Fallback if burst not ready
+        }
+        g_force[i] = mV;
+    }
 }
 
 // ===== Dynamixel ===========================================================
@@ -262,15 +500,89 @@ static void dxlScan() {
     Serial.println("[dxlScan] Done!");
 }
 
-static float dxlPositionMm(uint8_t table) {
+float dxlPositionMm(uint8_t table) {
     if (table >= g_dxlCount) return 0.0f;
     float pos = dxl.getPresentPosition(g_dxlIds[table]);  // unités Dynamixel
     return pos / DXL_PER_MM;
 }
 
-static void dxlGotoMm(uint8_t table, float mm) {
+void dxlGotoMm(uint8_t table, float mm) {
     if (table >= g_dxlCount) return;
     dxl.setGoalPosition(g_dxlIds[table], mm * DXL_PER_MM);
+    g_positionTarget[table] = mm;  // Mémoriser cible
+}
+
+// Lire le courant du moteur (détection obstacle/fin de course)
+static float dxlGetCurrent(uint8_t table) {
+    if (table >= g_dxlCount) return 0.0f;
+    return (float)dxl.getPresentCurrent(g_dxlIds[table]);
+}
+
+// Calibration d'une table : remontée progressive, détection fin de course par torque
+// Retourne true si succès, false si timeout/erreur
+static bool calibrateTable(uint8_t table, uint16_t timeout_ms = 30000) {
+    if (table >= g_dxlCount) {
+        Serial.print("[calibrate] Table "); Serial.print(table);
+        Serial.println(" : moteur absent (dxlCount)");
+        return false;
+    }
+
+    const float MAX_GOTO_MM = 100.0f;  // position max a priori
+    const float CALIB_RETREAT_MM = 2.0f;  // recul après détection limite
+    uint32_t start_ms = millis();
+
+    Serial.print("[calibrate] Table "); Serial.print(table); Serial.println(" : démarrage remontée");
+
+    // Remontée progressive vers MAX
+    dxlGotoMm(table, MAX_GOTO_MM);
+
+    // Polling du courant jusqu'à limite ou timeout
+    float calib_position = 0.0f;
+
+    while (millis() - start_ms < timeout_ms) {
+        float current_pos = dxlPositionMm(table);
+        float current_load = dxlGetCurrent(table);
+
+        // Serial.print("[calibrate] T"); Serial.print(table);
+        // Serial.print(" pos="); Serial.print(current_pos);
+        // Serial.print(" load="); Serial.println(current_load);
+
+        if (current_load > DXL_TORQUE_THRESHOLD) {
+            // Fin de course détectée
+            calib_position = current_pos;
+            Serial.print("[calibrate] Table "); Serial.print(table);
+            Serial.print(" : FIN DE COURSE détectée à "); Serial.print(calib_position);
+            Serial.print(" mm (load="); Serial.print(current_load); Serial.println(")");
+            break;
+        }
+
+        delay(DXL_CALIB_STEP_DELAY_MS);
+    }
+
+    // Vérifier si fin de course trouvée
+    if (calib_position < 1.0f) {
+        Serial.print("[calibrate] Table "); Serial.print(table);
+        Serial.println(" : TIMEOUT - aucune fin de course détectée");
+        return false;
+    }
+
+    // Recul de 2 mm (dégagement)
+    float retreat_pos = max(0.0f, calib_position - CALIB_RETREAT_MM);
+    Serial.print("[calibrate] Table "); Serial.print(table);
+    Serial.print(" : recul à "); Serial.print(retreat_pos); Serial.println(" mm");
+    dxlGotoMm(table, retreat_pos);
+
+    delay(500);  // attendre stabilisation
+
+    // Sauvegarder limites
+    g_positionMin[table] = 0.0f;
+    g_positionMax[table] = calib_position - CALIB_RETREAT_MM;
+
+    Serial.print("[calibrate] Table "); Serial.print(table);
+    Serial.print(" : SUCCÈS limites=["); Serial.print(g_positionMin[table]);
+    Serial.print(", "); Serial.print(g_positionMax[table]); Serial.println("]");
+
+    return true;
 }
 
 // LED Dynamixel = feedback visuel du mode : RUNNING -> clignotement,
@@ -347,6 +659,8 @@ static ForceControl getControlPhaseAndStep(uint8_t table_i, float current_mm, fl
 }
 
 static void updateForceLoop() {
+    // Skip force control loop while init is running
+    if (initIsRunning()) return;
     if (g_mode != Mode::RUNNING) return;
 
     bool nowInWindow = isInForceWindow();
@@ -439,6 +753,11 @@ static void sendResponseBinary(uint8_t result_code) {
 static void sendAck(const String& m)  { LINK.print("ACK:");   LINK.println(m); }
 static void sendDone(const String& m) { LINK.print("DONE:");  LINK.println(m); }
 static void sendErr(const String& m)  { LINK.print("ERROR:"); LINK.println(m); }
+static void sendCalib(uint8_t table, float min_mm, float max_mm) {
+    LINK.print("CALIB:"); LINK.print(table);
+    LINK.print(":"); LINK.print(min_mm, 1);
+    LINK.print(":"); LINK.println(max_mm, 1);
+}
 
 static void sendStatusBinary() {
     // Binary STATUS frame: [0xS] [FREQ:2 LE] [POS[4]:8] [FORCE[4]:8] [CRC8]
@@ -520,13 +839,26 @@ static void handleStop() {
 static void handleHome() {
     g_mode = Mode::HOMING;
     g_stepCount = 0;
-    // ÉTAPE 2 : référencer les tables si nécessaire.
-    g_homed = true;
-    g_mode = Mode::READY;
-    if (!binary_mode_active) {
-        sendAck("HOME");
-        sendDone("HOME");
+
+    if (!binary_mode_active) sendAck("HOME");
+
+    // Auto-calibration des tables : remontée + détection fin de course par torque
+    Serial.println("[handleHome] Calibration des 4 tables...");
+    bool all_success = true;
+    for (uint8_t i = 0; i < g_dxlCount; i++) {
+        if (!calibrateTable(i)) {
+            all_success = false;
+            if (!binary_mode_active) sendErr("HOME_CALIB_FAIL");
+        } else {
+            // Envoyer le statut de calibration
+            if (!binary_mode_active) sendCalib(i + 1, g_positionMin[i], g_positionMax[i]);
+        }
     }
+
+    g_homed = all_success;
+    g_mode = all_success ? Mode::READY : Mode::ERROR;
+
+    if (!binary_mode_active) sendDone("HOME");
 }
 
 static void handleHardReset() {
@@ -537,7 +869,63 @@ static void handleHardReset() {
     g_speed = 100;
     g_frequency = 0.8f;
     for (uint8_t i = 0; i < N_TABLES; i++) g_forceTarget[i] = 0;
+    initStop();  // Stop init if running
     if (!binary_mode_active) sendAck("HARD_RESET");
+}
+
+static void handleInitStart(const String& arg) {
+    // Format: INIT_START:<target_pos_mm>:<descent_rate_mm_per_min>
+    int colon1 = arg.indexOf(':');
+    if (colon1 < 0) {
+        if (!binary_mode_active) sendErr("INIT_START_FORMAT");
+        return;
+    }
+    float target_mm = arg.substring(0, colon1).toFloat();
+    float descent_rate = arg.substring(colon1 + 1).toFloat();
+
+    initStart(target_mm, descent_rate);
+    if (!binary_mode_active) sendAck("INIT_START");
+}
+
+static void handleInitStop() {
+    initStop();
+    if (!binary_mode_active) sendAck("INIT_STOP");
+}
+
+static void handleInitStatus() {
+    InitState state = initGetState();
+    const char* phase_str;
+    switch (state.phase) {
+        case INIT_IDLE:              phase_str = "IDLE"; break;
+        case INIT_PHASE1_DESCENT:    phase_str = "PHASE1"; break;
+        case INIT_PHASE2_FINE_DESCENT: phase_str = "PHASE2"; break;
+        case INIT_PHASE3_FORCE_HOLD: phase_str = "PHASE3"; break;
+        case INIT_COMPLETE:          phase_str = "COMPLETE"; break;
+        case INIT_ERROR:             phase_str = "ERROR"; break;
+        default:                     phase_str = "UNKNOWN"; break;
+    }
+
+    LINK.print("INIT_STATUS:");
+    LINK.print(phase_str);
+    LINK.print(',');
+    LINK.print(state.progress_percent);
+    LINK.print(',');
+    LINK.print(state.elapsed_ms);
+    LINK.print(',');
+    LINK.print(state.force_peaks[0], 1);
+    LINK.print(',');
+    LINK.print(state.force_peaks[1], 1);
+    LINK.print(',');
+    LINK.print(state.force_peaks[2], 1);
+    LINK.print(',');
+    LINK.print(state.force_peaks[3], 1);
+    LINK.print(',');
+    // complete_mask: bitmask of completed motors
+    uint8_t mask = 0;
+    for (uint8_t i = 0; i < N_TABLES; i++) {
+        if (state.complete[i]) mask |= (1 << i);
+    }
+    LINK.println(mask, HEX);
 }
 
 // SET_FORCE:<N>           -> consigne globale (les 4 cellules)
@@ -579,11 +967,41 @@ static void handleGoto(const String& arg) {
     }
     int table = arg.substring(0, colon).toInt();
     float mm  = arg.substring(colon + 1).toFloat();
+
+    // Validation: table number
     if (table < 1 || table > N_TABLES) {
         if (!binary_mode_active) sendErr("GOTO_TABLE");
         return;
     }
-    dxlGotoMm(table - 1, mm);
+
+    // Validation: machine state (READY ou IDLE uniquement)
+    if (g_mode != Mode::READY && g_mode != Mode::IDLE) {
+        if (!binary_mode_active) sendErr("GOTO_STATE");
+        return;
+    }
+
+    uint8_t table_idx = table - 1;
+
+    // Validation: limites de position calibrées
+    if (mm < g_positionMin[table_idx] || mm > g_positionMax[table_idx]) {
+        if (!binary_mode_active) {
+            sendErr("GOTO_LIMIT");
+            Serial.print("[GOTO] Table "); Serial.print(table);
+            Serial.print(" position "); Serial.print(mm);
+            Serial.print(" hors limites ["); Serial.print(g_positionMin[table_idx]);
+            Serial.print(", "); Serial.print(g_positionMax[table_idx]); Serial.println("]");
+        }
+        return;
+    }
+
+    // Validation: moteur présent
+    if (table_idx >= g_dxlCount) {
+        if (!binary_mode_active) sendErr("SLAVE_OFFLINE");
+        return;
+    }
+
+    // Exécution
+    dxlGotoMm(table_idx, mm);
     if (!binary_mode_active) sendAck("GOTO");
 }
 
@@ -600,6 +1018,9 @@ static void dispatch(String line) {
     else if (cmd == "START")      handleStart();
     else if (cmd == "STOP")       handleStop();
     else if (cmd == "HARD_RESET") handleHardReset();
+    else if (cmd == "INIT_START") handleInitStart(arg);
+    else if (cmd == "INIT_STOP")  handleInitStop();
+    else if (cmd == "INIT_STATUS") handleInitStatus();
     else if (cmd == "GET_STATUS") { sendStatus(); sendAck("GET_STATUS"); }
     else if (cmd == "SET_FREQ") {
         float f = arg.toFloat();
@@ -754,15 +1175,34 @@ static void handleBinaryCommand(const uint8_t* frame, size_t len) {
                 }
             }
             break;
-        case 0x20:  // GOTO
+        case 0x20:  // GOTO (binary: optimized)
             if (len >= 5) {
                 uint8_t table = frame[2];
                 uint16_t pos_mm10 = frame[3] | (frame[4] << 8);
                 float pos_mm = pos_mm10 / 10.0f;
+
+                // Validation: table number
                 if (table < 1 || table > N_TABLES) {
                     sendResponseBinary(RESP_ERROR_INVALID_ARG);
+                    break;
+                }
+
+                // Validation: machine state
+                if (g_mode != Mode::READY && g_mode != Mode::IDLE) {
+                    sendResponseBinary(RESP_ERROR_INVALID_ARG);
+                    break;
+                }
+
+                uint8_t table_idx = table - 1;
+
+                // Validation: limites & slave présent
+                if (table_idx >= g_dxlCount ||
+                    pos_mm < g_positionMin[table_idx] ||
+                    pos_mm > g_positionMax[table_idx]) {
+                    sendResponseBinary(RESP_ERROR_INVALID_ARG);
                 } else {
-                    handleGoto(String(table) + ":" + String(pos_mm, 1));
+                    // Direct call (no String reconstruction)
+                    dxlGotoMm(table_idx, pos_mm);
                     sendResponseBinary(RESP_ACK);
                     handled = true;
                 }
@@ -781,6 +1221,38 @@ static void handleBinaryCommand(const uint8_t* frame, size_t len) {
             dxlScan();
             sendResponseBinary(RESP_ACK);
             handled = true;
+            break;
+        case 0x40:  // SET_FORCE_BURST (dynamic sample count)
+            if (len >= 4) {
+                // Unpack size as little-endian u16
+                uint16_t new_burst_size = frame[2] | (frame[3] << 8);
+
+                // Validate range (256–12000)
+                if (new_burst_size < 256 || new_burst_size > 12000) {
+                    sendResponseBinary(RESP_ERROR_INVALID_ARG);
+                } else {
+                    // Recalculate trigger step for new burst size
+                    int old_burst = g_forceDmaBurstSize;
+                    int old_trigger = FORCE_TRIGGER_STEP;
+
+                    g_forceDmaBurstSize = new_burst_size;
+                    // FORCE_TRIGGER_STEP = STEPS_PER_REV - (int)(32000 * size / (2 * 87000))
+                    int new_trigger = (int)(3200 - (32000 * new_burst_size / (2.0f * 87000)));
+
+                    // Adjust step counter if timing shifted
+                    int trigger_delta = new_trigger - old_trigger;
+                    g_stepCount += trigger_delta;
+                    if (g_stepCount < 0) g_stepCount = 0;
+                    if (g_stepCount >= STEPS_PER_REV) g_stepCount -= STEPS_PER_REV;
+
+                    Serial.print("[force] Burst size updated: ");
+                    Serial.print(old_burst); Serial.print(" → ");
+                    Serial.println(new_burst_size);
+
+                    sendResponseBinary(RESP_ACK);
+                    handled = true;
+                }
+            }
             break;
         case 0xF0:  // GET_STATUS
             sendStatusBinary();  // Send binary STATUS frame
@@ -810,6 +1282,10 @@ void setup() {
     digitalWrite(5, LOW);                // 30 Ω (relay 2 OFF)
 
     analogReadResolution(12);            // 0..4095
+
+    // Initialize DMA Freerun acquisition for load cells
+    forceADCSetup();
+    forceDMASetup();
 
     LINK.begin(LINK_BAUD);               // lien vers l'ESP8266
 
@@ -901,16 +1377,14 @@ void loop() {
         bin_rx_pos = 0;  // Silently discard (avoid CPU lock)
     }
 
-    // Liaison permanente : burst de statut autonome à 10 Hz (l'ESP le cache).
-    // BUT: only start streaming after ESP has booted AND first command received (handshake)
+    // Liaison permanente : burst de statut autonome à 2.5 Hz (STREAM_PERIOD_MS = 400ms, l'ESP le cache).
+    // Start streaming binary STATUS frames only after ESP has booted (3s delay) and sent at least one command (handshake)
+    // Increased STREAM_PERIOD_MS to 400ms to prevent SoftwareSerial buffer overflow on ESP
     static uint32_t lastStreamMs = 0;
-
-    // TEMPORARY: Disable STATUS streaming to fix buffer corruption issue
-    // Start streaming binary STATUS frames only after ESP has booted (3s delay) and sent at least one command
-    // if (esp_ready && now >= 3000 && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
-    //     lastStreamMs = now;
-    //     sendStatusBinary();  // Use binary protocol (Phase 3)
-    // }
+    if (esp_ready && now >= 3000 && (now - lastStreamMs >= STREAM_PERIOD_MS)) {
+        lastStreamMs = now;
+        sendStatusBinary();  // Use binary protocol (Phase 3)
+    }
 
     // Feedback LED : clignotement en RUNNING, fixe sinon.
     updateDxlLeds();
@@ -921,6 +1395,7 @@ void loop() {
     static uint32_t lastForceLoopUpdateMs = 0;
     if (now - lastForceLoopUpdateMs >= FORCE_LOOP_INTERVAL_MS) {
         lastForceLoopUpdateMs = now;
-        updateForceLoop();
+        initUpdate();      // Update init state machine (50ms interval)
+        updateForceLoop(); // Update force control loop (skipped during init)
     }
 }

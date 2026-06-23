@@ -196,24 +196,30 @@ export function useLiveStatus(esp_ip: string): UseLiveStatusReturn {
         if (typeof event.data !== 'string') {
           // Binary frame
           const data = new Uint8Array(event.data);
-          try {
-            const parsed = parseStatusFrame(data);
-            setFrequency(parsed.frequency);
-            setPositions(parsed.positions);
-            setForces(parsed.forces);
-            lastFrameTimeRef.current = performance.now();
-          } catch (err) {
-            // Log but don't crash; just skip this frame and wait for next one
-            const msg = err instanceof Error ? err.message : String(err);
-            console.warn(`[useLiveStatus] Failed to parse STATUS frame: ${msg}`);
-            // Optionally log hex for debugging
-            if (data.length > 0) {
-              const hex = Array.from(data.slice(0, 20))
-                .map((b) => b.toString(16).padStart(2, '0'))
-                .join(' ');
-              console.warn(`[useLiveStatus] Frame hex (first 20): ${hex}`);
+
+          // Filter: Only process STATUS frames (0x53 = 'S')
+          // Ignore ACK/DONE frames (0x52 = 'R') and other frame types
+          if (data.length > 0 && data[0] === 0x53) {
+            try {
+              const parsed = parseStatusFrame(data);
+              setFrequency(parsed.frequency);
+              setPositions(parsed.positions);
+              setForces(parsed.forces);
+              lastFrameTimeRef.current = performance.now();
+            } catch (err) {
+              // Log but don't crash; just skip this frame and wait for next one
+              const msg = err instanceof Error ? err.message : String(err);
+              console.warn(`[useLiveStatus] Failed to parse STATUS frame: ${msg}`);
+              // Optionally log hex for debugging
+              if (data.length > 0) {
+                const hex = Array.from(data.slice(0, 20))
+                  .map((b) => b.toString(16).padStart(2, '0'))
+                  .join(' ');
+                console.warn(`[useLiveStatus] Frame hex (first 20): ${hex}`);
+              }
             }
           }
+          // Silently ignore non-STATUS frames (ACK, DONE, etc.)
         }
       };
 

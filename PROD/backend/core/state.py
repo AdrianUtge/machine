@@ -20,7 +20,22 @@ MAINTAINER NOTES:
 ===============================================================================
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from core.init_config import InitConfig
+
+
+# --- Init status ---------------------------------------------------------
+
+@dataclass
+class InitStatus:
+    """Motor initialization process status."""
+    running: bool = False
+    phase: str = "IDLE"  # IDLE, PHASE1, PHASE2, PHASE3, COMPLETE, ERROR
+    progress_percent: int = 0
+    elapsed_ms: int = 0
+    force_peaks: list[float] = field(default_factory=lambda: [0.0, 0.0, 0.0, 0.0])
+    complete_motors: list[bool] = field(default_factory=lambda: [False, False, False, False])
+    error_code: int = 0
 
 
 # --- Etat machine --------------------------------------------------------
@@ -38,8 +53,14 @@ class MachineState:
     # Sert à calculer le runtime de façon absolue (pas un compteur remis à 0).
     cycle_start: int | None = None
 
-    # Position of 4 tables
+    # Position of 4 tables (mm)
     positions: list[float] = None
+    # Position targets for 4 tables (mm) — memorized after GOTO command
+    position_targets: list[float] = None
+    # Position limits [min, max] for each table (calibrated during HOME)
+    position_limits: dict = None  # {"table_1": {"min": 0.0, "max": 96.0}, ...}
+    # Is each table moving (for frontend UI feedback)
+    is_moving: list[bool] = None
     # 4 force sensors
     sensors: list[float] = None
     # Motor current
@@ -52,9 +73,24 @@ class MachineState:
     # Sert à déduire l'état du slave : ONLINE = data reçue récemment, OFFLINE sinon.
     last_data_ts: float = 0.0
 
+    # Init process state
+    init_status: InitStatus = field(default_factory=InitStatus)
+    init_config: 'InitConfig' = None  # Will be populated from machine_config.ini
+
     def __post_init__(self):
         if self.positions is None:
             self.positions = [0.0, 0.0, 0.0, 0.0]
+        if self.position_targets is None:
+            self.position_targets = [0.0, 0.0, 0.0, 0.0]
+        if self.position_limits is None:
+            self.position_limits = {
+                "table_1": {"min": 0.0, "max": 96.0},
+                "table_2": {"min": 0.0, "max": 96.0},
+                "table_3": {"min": 0.0, "max": 96.0},
+                "table_4": {"min": 0.0, "max": 96.0},
+            }
+        if self.is_moving is None:
+            self.is_moving = [False, False, False, False]
         if self.sensors is None:
             self.sensors = [0.0, 0.0, 0.0, 0.0]
         if self.force_targets is None:

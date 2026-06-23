@@ -21,7 +21,7 @@
  * ===========================================================================
  */
 import { useState, useEffect } from 'react';
-import { AlertTriangle, SlidersHorizontal, Settings as SettingsIcon } from 'lucide-react';
+import { AlertTriangle, SlidersHorizontal, Settings as SettingsIcon, X } from 'lucide-react';
 import ConnectionScreen from './components/ConnectionScreen';
 import MotionControl from './components/MotionControl';
 import StatusPanelSimple from './components/StatusPanelSimple';
@@ -29,6 +29,7 @@ import SerialMonitor from './components/SerialMonitor';
 import PositionsAndSensors from './components/PositionsAndSensors';
 import ForceGraph from './components/ForceGraph';
 import Settings from './components/Settings';
+import InitPanel from './components/InitPanel';
 import { useMachineController } from './hooks/useMachineController';
 
 import { useLiveStatus } from './hooks/useLiveStatus';
@@ -59,6 +60,7 @@ export default function App() {
     latencyMs,
     blinkMotor,
     setResistance,
+    setForceSampleCount,
   } = useMachineController();
 
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
@@ -70,6 +72,7 @@ export default function App() {
   const [advanced, setAdvanced] = useState(false);
   const [selectedSensors, setSelectedSensors] = useState<number[]>([]);
   const [showSettings, setShowSettings] = useState(false);
+  const [showInitPanel, setShowInitPanel] = useState(false);
   const [espIp, setEspIp] = useState<string>('192.168.4.1');  // Default ESP IP, can be discovered
 
   // WebSocket hook for real-time binary STATUS frames (Phase E)
@@ -277,6 +280,7 @@ export default function App() {
                     advanced={advanced}
                     selectedSensors={selectedSensors}
                     onToggleSensor={toggleSensor}
+                    onInitClick={() => setShowInitPanel(true)}
                   />
                 ) : (
                   <div className="text-slate-400">Loading motion control...</div>
@@ -326,7 +330,31 @@ export default function App() {
           onBlinkMotor={blinkMotor}
           onSetResistance={setResistance}
           currentResistances={{ board0: 30, board1: 30 }}  // TODO: get from machineState or backend
+          onSetForceSampleCount={setForceSampleCount}
+          currentForceSampleCount={8192}  // TODO: get from /api/config/force/info
         />
+      )}
+
+      {/* Init Panel Modal */}
+      {showInitPanel && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 rounded-lg shadow-lg p-6 max-w-md w-full m-4">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold">Motor Initialization</h2>
+              <button
+                onClick={() => setShowInitPanel(false)}
+                className="text-slate-400 hover:text-white transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            {isConnected ? (
+              <InitPanel />
+            ) : (
+              <div className="text-slate-400">Please connect to the machine first.</div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

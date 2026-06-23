@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Gauge, Play, Square, ChevronDown, Home, Weight, Save, Trash2, BookMarked, Layers } from 'lucide-react';
+import { Gauge, Play, Square, ChevronDown, Home, Weight, Save, Trash2, BookMarked, Layers, Zap } from 'lucide-react';
 import type { CustomPresets } from '../hooks/useMachineController';
 
 type MachineState = 'IDLE' | 'HOMING' | 'RUNNING' | 'ERROR' | 'SHUTDOWN';
@@ -21,6 +21,7 @@ interface MotionControlProps {
   advanced: boolean;
   selectedSensors: number[];                                  // indices 0-3 selected (right panel or here)
   onToggleSensor: (idx: number) => void;
+  onInitClick?: () => void;                                   // callback to show init panel
 }
 
 export default function MotionControl({
@@ -38,7 +39,8 @@ export default function MotionControl({
   onDeletePreset,
   advanced,
   selectedSensors,
-  onToggleSensor
+  onToggleSensor,
+  onInitClick
 }: MotionControlProps) {
   const [targetFrequency, setTargetFrequency] = useState(frequency);
   const [targetForce, setTargetForce] = useState(forceTarget);
@@ -117,7 +119,7 @@ export default function MotionControl({
   return (
     <div className="space-y-6">
       {/* Command Buttons */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-4 gap-3">
         <button
           onClick={() => onCommand('HOME')}
           disabled={!isConnected || isCommandPending('HOME') || machineState === 'HOMING'}
@@ -143,6 +145,15 @@ export default function MotionControl({
         >
           <Square className="w-5 h-5" />
           {isCommandPending('STOP') ? 'Stopping...' : 'STOP'}
+        </button>
+
+        <button
+          onClick={onInitClick}
+          disabled={!isConnected}
+          className="flex items-center justify-center gap-2 px-4 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg transition-colors font-semibold"
+        >
+          <Zap className="w-5 h-5" />
+          INIT
         </button>
       </div>
 

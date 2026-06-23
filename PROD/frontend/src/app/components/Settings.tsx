@@ -15,7 +15,8 @@
  * ===========================================================================
  */
 
-import { Zap, ChevronLeft } from 'lucide-react';
+import { Zap, ChevronLeft, Activity } from 'lucide-react';
+import { useState, useEffect } from 'react';
 
 interface SettingsProps {
   isConnected: boolean;
@@ -23,6 +24,8 @@ interface SettingsProps {
   onBlinkMotor: (motorId: number, durationMs?: number) => void;
   onSetResistance: (resistanceOhm: number, boardId?: number) => void;
   currentResistances?: { board0: number; board1: number };
+  onSetForceSampleCount?: (sampleCount: number) => Promise<void>;
+  currentForceSampleCount?: number;
 }
 
 export default function Settings({
@@ -31,7 +34,12 @@ export default function Settings({
   onBlinkMotor,
   onSetResistance,
   currentResistances = { board0: 30, board1: 30 },
+  onSetForceSampleCount,
+  currentForceSampleCount = 8192,
 }: SettingsProps) {
+  const [forceSampleCount, setForceSampleCount] = useState(currentForceSampleCount);
+  const [forceConfigSyncing, setForceConfigSyncing] = useState(false);
+  const [forceConfigStatus, setForceConfigStatus] = useState<'synced' | 'syncing' | 'error'>('synced');
   const motors = [
     { id: 0, label: 'Motor 0 (Table 0)', color: 'from-blue-500 to-blue-600' },
     { id: 1, label: 'Motor 1 (Table 1)', color: 'from-purple-500 to-purple-600' },
@@ -63,6 +71,33 @@ export default function Settings({
       return;
     }
     onSetResistance(resistance, boardId);
+  };
+
+  const handleApplyForceSampleCount = async () => {
+    if (!isConnected || !onSetForceSampleCount) {
+      alert('Machine not connected');
+      return;
+    }
+
+    // Validate range
+    if (forceSampleCount < 256 || forceSampleCount > 12000) {
+      setForceConfigStatus('error');
+      alert('Sample count must be between 256 and 12000');
+      return;
+    }
+
+    setForceConfigSyncing(true);
+    setForceConfigStatus('syncing');
+
+    try {
+      await onSetForceSampleCount(forceSampleCount);
+      setForceConfigStatus('synced');
+    } catch (err) {
+      setForceConfigStatus('error');
+      alert(`Failed to apply force sample count: ${err}`);
+    } finally {
+      setForceConfigSyncing(false);
+    }
   };
 
   return (
@@ -170,6 +205,87 @@ export default function Settings({
                   </div>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Force Acquisition Configuration */}
+          <div className="border border-slate-700 rounded-lg p-6">
+            <h2 className="text-xl font-semibold text-white mb-4 flex items-center gap-2">
+              <Activity size={20} className="text-cyan-500" />
+              Force Acquisition (DMA Freerun)
+            </h2>
+            <p className="text-slate-400 text-sm mb-6">
+              Configure the number of samples per burst for load cell measurement. Higher values improve signal quality but increase latency.
+              Range: 256–12000 samples (default: 8192 @ 87 kSPS = 94 ms per burst).
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-white mb-2">
+                  Sample Count per Burst
+                </label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min={256}
+                    max={12000}
+                    step={256}
+                    value={forceSampleCount}
+                    onChange={(e) => setForceSampleCount(Math.max(256, Math.min(12000, parseInt(e.target.value) || 256)))}
+                    disabled={!isConnected || forceConfigSyncing}
+                    className="flex-1 px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                  />
+                  <button
+                    onClick={handleApplyForceSampleCount}
+                    disabled={!isConnected || forceConfigSyncing}
+                    className={`px-4 py-2 rounded-lg font-semibold text-sm transition-all ${
+                      !isConnected || forceConfigSyncing
+                        ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
+                        : 'bg-cyan-600 text-white hover:bg-cyan-700'
+                    }`}
+                  >
+                    {forceConfigSyncing ? 'Applying...' : 'Apply'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700">
+                <div>
+                  <div className="text-xs text-slate-500 uppercase tracking-wider">Sample Rate</div>
+                  <div className="text-lg font-semibold text-cyan-400">87 kSPS</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500 uppercase tracking-wider">Burst Duration</div>
+                  <div className="text-lg font-semibold text-cyan-400">
+                    {((forceSampleCount / 87) / 1000).toFixed(1)} ms
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500 uppercase tracking-wider">SNR Target</div>
+                  <div className="text-lg font-semibold text-cyan-400">~80 dB</div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500 uppercase tracking-wider">Config Status</div>
+                  <div className={`text-lg font-semibold ${
+                    forceConfigStatus === 'synced' ? 'text-emerald-400' :
+                    forceConfigStatus === 'syncing' ? 'text-yellow-400' :
+                    'text-red-400'
+                  }`}>
+                    {forceConfigStatus === 'synced' ? '✓ Synced' :
+                     forceConfigStatus === 'syncing' ? '◌ Syncing' :
+                     '✗ Error'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 rounded-lg p-3 text-xs text-slate-400 border border-slate-700">
+                <div className="font-mono">
+                  Current: {currentForceSampleCount} samples
+                  {currentForceSampleCount !== forceSampleCount && (
+                    <span className="text-yellow-500"> → Pending: {forceSampleCount} samples</span>
+                  )}
+                </div>
+              </div>
             </div>
           </div>
 

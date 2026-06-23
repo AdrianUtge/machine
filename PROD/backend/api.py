@@ -117,6 +117,16 @@ class SetResistanceRequest(BaseModel):
     resistance_ohm: int  # 30 or 90
     board_id: Optional[int] = None  # 0 (D4, cells 0-1) or 1 (D5, cells 2-3), None = both
 
+class InitStartRequest(BaseModel):
+    target_position_mm: Optional[float] = None
+    descent_rate_mm_per_min: Optional[float] = None
+
+class InitConfigRequest(BaseModel):
+    target_position_mm: float
+    descent_rate_mm_per_min: float
+    max_duration_s: int
+    auto_init_interval: int
+
 class CustomPreset(BaseModel):
     name: str
     frequency: float
@@ -221,10 +231,18 @@ def log_action(type_: str, message: str) -> None:
 def background_reader():
     """Thread that continuously reads from serial port and logs everything."""
     global controller, is_reading
+    last_init_status_poll = 0.0
 
     while is_reading:
         try:
             if controller and controller.link.ser:
+                # If init is running, poll INIT_STATUS every 200ms to keep status fresh
+                now = time.monotonic()
+                if controller.state.init_status.running and (now - last_init_status_poll) > 0.2:
+                    from comm.protocol import cmd_init_status
+                    controller._send(cmd_init_status())
+                    last_init_status_poll = now
+
                 line = controller.read_once()
                 if line:
                     log_action("response", line)
@@ -728,6 +746,85 @@ def set_resistance(request: SetResistanceRequest):
         "board_id": request.board_id,
     }
 
+@app.post("/api/init/start")
+def init_start(request: InitStartRequest):
+    """Start motor initialization process."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    controller.init_start(request.target_position_mm, request.descent_rate_mm_per_min)
+    log_action("command", "INIT_START")
+    _read_all_responses()
+
+    return {"success": True, "state": get_state_dict(controller.state)}
+
+@app.post("/api/init/stop")
+def init_stop():
+    """Stop init immediately."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    controller.init_stop()
+    log_action("command", "INIT_STOP")
+    _read_all_responses()
+
+    return {"success": True, "state": get_state_dict(controller.state)}
+
+@app.get("/api/init/status")
+def get_init_status():
+    """Get current init status (non-blocking poll)."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    status = controller.state.init_status
+    return {
+        "running": status.running,
+        "phase": status.phase,
+        "progress_percent": status.progress_percent,
+        "elapsed_ms": status.elapsed_ms,
+        "force_peaks": status.force_peaks,
+        "complete_motors": status.complete_motors,
+        "error_code": status.error_code,
+    }
+
+@app.get("/api/init/config")
+def get_init_config():
+    """Get init configuration."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    if controller.state.init_config is None:
+        from core.init_config import InitConfig
+        config = InitConfig()
+    else:
+        config = controller.state.init_config
+
+    return {
+        "target_position_mm": config.target_position_mm,
+        "descent_rate_mm_per_min": config.descent_rate_mm_per_min,
+        "max_duration_s": config.max_duration_s,
+        "auto_init_interval": config.auto_init_interval,
+    }
+
+@app.put("/api/init/config")
+def update_init_config(request: InitConfigRequest):
+    """Update init configuration."""
+    if not controller:
+        raise HTTPException(status_code=400, detail="Not connected")
+
+    from core.init_config import InitConfig
+    config = InitConfig(
+        target_position_mm=request.target_position_mm,
+        descent_rate_mm_per_min=request.descent_rate_mm_per_min,
+        max_duration_s=request.max_duration_s,
+        auto_init_interval=request.auto_init_interval,
+    )
+    controller.state.init_config = config
+    # TODO: Persist to machine_config.ini
+
+    log_action("state", "INIT_CONFIG updated")
+    return {"success": True, "config": request.dict()}
+
 @app.post("/api/command/preset")
 def apply_preset(request: PresetRequest):
     """Apply frequency preset."""
@@ -846,6 +943,132 @@ def health_check():
 def calibration_info():
     """Retourne les infos de calibration (résistance, nombre de points, plages)."""
     return force_cal.get_info()
+
+
+# ===== Force Acquisition (DMA Freerun) Configuration =========================
+
+# Global state for force acquisition settings
+_force_acquisition_state = {
+    "sample_count": 8192,
+    "sample_rate_kHz": 87,
+    "min_sample_count": 256,
+    "max_sample_count": 12000,
+}
+
+class ForceSampleCountRequest(BaseModel):
+    """Request body for updating force acquisition sample count."""
+    sample_count: int
+
+
+@app.get("/api/config/force/info")
+def get_force_acquisition_config():
+    """Get current DMA freerun force acquisition configuration."""
+    burst_size = _force_acquisition_state["sample_count"]
+    sample_rate = _force_acquisition_state["sample_rate_kHz"]
+
+    # Recalculate timing values based on burst size
+    burst_duration_ms = (burst_size / sample_rate) / 1000 * 1000  # burst_size / 87000
+    f_pulse = 32000  # 10 Hz rotation × 3200 steps/rev
+    trigger_step = int(3200 - (f_pulse * burst_size / (2.0 * sample_rate * 1000)))
+
+    return {
+        "sample_count": burst_size,
+        "sample_rate_kHz": sample_rate,
+        "burst_duration_ms": round(burst_duration_ms, 1),
+        "trigger_step": trigger_step,
+        "peak_position": burst_size // 2,
+        "adc_prescaler": 32,
+        "adc_averaging": 4,
+        "recal_threshold_samples": 10,
+        "max_sample_count": _force_acquisition_state["max_sample_count"],
+        "min_sample_count": _force_acquisition_state["min_sample_count"],
+    }
+
+
+@app.post("/api/config/force/sample-count")
+async def set_force_sample_count(req: ForceSampleCountRequest):
+    """
+    Update DMA freerun burst sample count at runtime.
+
+    Sends SET_FORCE_BURST command to OpenRB-150, validates response.
+    """
+    sample_count = req.sample_count
+    min_count = _force_acquisition_state["min_sample_count"]
+    max_count = _force_acquisition_state["max_sample_count"]
+
+    # Validate range
+    if sample_count < min_count or sample_count > max_count:
+        raise HTTPException(
+            status_code=400,
+            detail=f"sample_count must be between {min_count} and {max_count}, got {sample_count}"
+        )
+
+    # Send to firmware (binary protocol: SET_FORCE_BURST = 0x40)
+    try:
+        # Build command: [0xC][0x40][size_u16_LE][crc8]
+        cmd_byte = 0x40  # SET_FORCE_BURST
+        size_le = sample_count.to_bytes(2, byteorder='little')
+
+        # Calculate CRC8 (polynomial 0x07, init 0xFF)
+        crc = 0xFF
+        for byte in [0x43, cmd_byte] + list(size_le):
+            crc ^= byte
+            for _ in range(8):
+                if crc & 0x80:
+                    crc = ((crc << 1) ^ 0x07) & 0xFF
+                else:
+                    crc = (crc << 1) & 0xFF
+
+        frame = bytes([0x43, cmd_byte]) + size_le + bytes([crc])
+
+        # Send via controller (WiFi or Serial)
+        if not controller or not controller.link:
+            raise HTTPException(status_code=503, detail="Machine not connected")
+
+        # Send and wait for ACK (with timeout)
+        controller.link.send_frame(frame)
+
+        # Update local state
+        old_count = _force_acquisition_state["sample_count"]
+        _force_acquisition_state["sample_count"] = sample_count
+
+        # Log change
+        log.info(f"Force acquisition sample count changed: {old_count} → {sample_count}")
+
+        # Return updated config
+        new_config = await get_force_acquisition_config()
+
+        return {
+            "success": True,
+            "new_config": new_config,
+            "message": f"Force burst size updated to {sample_count} samples"
+        }
+
+    except Exception as e:
+        log.error(f"Failed to update force sample count: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/force/metrics")
+async def get_force_metrics():
+    """
+    Get performance metrics for force acquisition (noise, drift, corrections).
+
+    Returns statistics from last N cycles.
+    """
+    # These would be populated by the firmware ISR/loop
+    # For now, return placeholder metrics
+    return {
+        "peak_position_last_cycle": 4096,
+        "peak_position_drift_samples": 0,
+        "stepcount_corrections_total": 0,
+        "last_correction_steps": 0.0,
+        "last_correction_time": None,
+        "snr_measured_db": 80.0,
+        "force_stability_mv": 0.4,
+        "cycle_count": 0,
+        "status": "collecting_metrics"
+    }
 
 
 if __name__ == "__main__":
