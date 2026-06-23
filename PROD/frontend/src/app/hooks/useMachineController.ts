@@ -343,6 +343,10 @@ export const useMachineController = () => {
     [sendCommand]
   );
 
+  const setForceSampleCount = useCallback(async (sampleCount: number) => {
+    return sendCommand('/config/force/sample-count', { sample_count: sampleCount });
+  }, [sendCommand]);
+
   // --- Custom presets (frequency + force), persisted server-side ---------
 
   const loadPresets = useCallback(async () => {
@@ -543,6 +547,7 @@ export const useMachineController = () => {
     torqueOn,
     blinkMotor,
     setResistance,
+    setForceSampleCount,
 
     // Custom presets (frequency + force)
     customPresets,

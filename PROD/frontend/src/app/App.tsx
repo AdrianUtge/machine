@@ -60,6 +60,7 @@ export default function App() {
     latencyMs,
     blinkMotor,
     setResistance,
+    setForceSampleCount,
   } = useMachineController();
 
   const [availablePorts, setAvailablePorts] = useState<string[]>([]);
@@ -329,6 +330,8 @@ export default function App() {
           onBlinkMotor={blinkMotor}
           onSetResistance={setResistance}
           currentResistances={{ board0: 30, board1: 30 }}  // TODO: get from machineState or backend
+          onSetForceSampleCount={setForceSampleCount}
+          currentForceSampleCount={8192}  // TODO: get from /api/config/force/info
         />
       )}
 
